@@ -1,25 +1,9 @@
 // App shell: session, role-based navigation, client-side router, notifications, offline banner.
 import { api, flushQueue, queueLength, onQueueChange } from './api.js';
-import { html, set, $, on, toast, errToast, modal, ago, ROLE, esc } from './ui.js';
+import { html, set, $, on, toast, errToast, modal, ago, ROLE, esc, initials } from './ui.js';
+import { icon as lucide } from './icons.js';
 
-const ICONS = {
-  home: 'M3 11l9-7 9 7v9a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1z',
-  calendar: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
-  check: 'M4 12l5 5L20 6',
-  clipboard: 'M8 4h8v3H8zM6 6H5v15h14V6h-1M9 12h6M9 16h4',
-  book: 'M4 5a2 2 0 012-2h13v16H6a2 2 0 00-2 2zM4 5v16',
-  users: 'M9 11a4 4 0 100-8 4 4 0 000 8zM2 21v-1a6 6 0 0112 0v1M17 11a3 3 0 100-6M22 21v-1a5 5 0 00-4-4.9',
-  layers: 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5',
-  dumbbell: 'M6 7v10M3 9v6M18 7v10M21 9v6M6 12h12',
-  chat: 'M4 5h16v11H8l-4 4z',
-  box: 'M3 7l9-4 9 4v10l-9 4-9-4zM3 7l9 4 9-4M12 11v10',
-  tasks: 'M9 6h11M9 12h11M9 18h11M4 6h1M4 12h1M4 18h1',
-  chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
-  gear: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19 12a7 7 0 00-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 00-2-1.2L14 3h-4l-.5 2.6a7 7 0 00-2 1.2l-2.4-1-2 3.4 2 1.6A7 7 0 005 12a7 7 0 00.1 1.2l-2 1.6 2 3.4 2.4-1a7 7 0 002 1.2L10 21h4l.5-2.6a7 7 0 002-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z',
-  qr: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2',
-  user: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0',
-};
-const icon = (k) => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${ICONS[k]}"/></svg>`;
+const icon = (k, size = 16) => lucide(k, size);
 
 const ROUTES = [
   ['/', 'home', 'Home'],
@@ -51,7 +35,7 @@ function nav(me) {
   add('/', 'Home', 'home');
   add('/calendar', 'Calendar', 'calendar');
   if (staff) {
-    add('/attendance', 'Attendance', 'check');
+    add('/attendance', 'Attendance', 'calendar-check');
     add('/practice', 'Practice', 'clipboard');
     if (c['playbook.view']) add('/playbook', 'Playbook', 'book');
     items.push({ sec: 'Roster' });
@@ -63,6 +47,7 @@ function nav(me) {
     items.push({ sec: 'Program' });
     add('/messages', 'Messages', 'chat');
     if (c['equipment.view']) add('/equipment', 'Equipment', 'box');
+    add('/settings/integrations', 'Integrations', 'plug');
     add(c.admin ? '/settings' : '/account', c.admin ? 'Settings' : 'My account', 'gear');
   } else {
     if (role === 'player') {
@@ -84,20 +69,22 @@ function nav(me) {
 function shell() {
   const me = state.me;
   const app = $('#app');
+  const items = nav(me);
   set(app, html`<div class="shell">
     <aside class="side" id="side">
-      <div class="brand"><div class="mark">${(me.program.name || 'P')[0]}</div><div><b>${me.program.name}</b><span>${me.season ? me.season.name : me.program.school}</span></div></div>
-      <nav id="nav">${nav(me).map((i) => (i.sec ? html`<div class="sec">${i.sec}</div>` : html`<a href="${i.href}" data-nav="${i.href}">${icon(i.ic)}<span>${i.label}</span></a>`))}</nav>
+      <div class="brand"><div class="mark">${(me.program.name || 'P')[0]}</div><div style="min-width:0"><b>${me.program.name}</b><span>${me.season ? me.season.name : me.program.school}</span></div></div>
+      <button class="search" id="cmdk">${icon('search', 14)}<span>Search or jump to…</span><kbd>${navigator.platform.includes('Mac') ? '⌘K' : 'Ctrl K'}</kbd></button>
+      <nav id="nav">${items.map((i) => (i.sec ? html`<div class="sec">${i.sec}</div>` : html`<a href="${i.href}" data-nav="${i.href}" data-label="${i.label}">${icon(i.ic)}<span>${i.label}</span></a>`))}</nav>
+      <div class="me"><span class="av">${initials(me.user.name)}</span><div class="who"><b>${me.user.name}</b><span>${me.user.title || ROLE[me.user.role]}</span></div>
+        <button class="iconbtn" id="logout" title="Sign out" aria-label="Sign out">${icon('logout', 15)}</button></div>
     </aside>
     <div class="main">
       <div class="top">
-        <button class="ghost icon menu-btn" id="menu" aria-label="Menu">☰</button>
-        <div class="title" id="title"></div>
-        <div class="spacer"></div>
+        <button class="iconbtn menu-btn" id="menu" aria-label="Menu">${icon('menu', 18)}</button>
+        <div class="crumb"><span class="prefix" id="crumbsec"></span><span class="prefix" id="crumbsep">${icon('right', 14)}</span><span class="title" id="title"></span></div>
         <span id="queue" class="badge warn" hidden></span>
-        <button class="ghost" id="bell" aria-label="Notifications">Alerts <span class="badge" id="unread">0</span></button>
-        <div class="who"><b>${me.user.name}</b><br>${me.user.title || ROLE[me.user.role]}</div>
-        <button class="ghost sm" id="logout">Sign out</button>
+        <button class="iconbtn" id="cmdk2" aria-label="Search">${icon('search', 16)}</button>
+        <button class="iconbtn" id="bell" aria-label="Notifications" title="Notifications">${icon('bell', 16)}<span class="dotn" id="unread" hidden></span></button>
       </div>
       <div class="offline-bar" id="offline" hidden>You are offline. Attendance, notes, ratings and workout logs are saved on this device and sync when you reconnect.</div>
       <div class="content" id="content"></div>
@@ -106,6 +93,8 @@ function shell() {
   $('#menu').onclick = () => $('#side').classList.toggle('open');
   $('#logout').onclick = async () => { await api.post('/api/auth/logout').catch(() => {}); location.href = '/'; };
   $('#bell').onclick = openNotifications;
+  $('#cmdk').onclick = palette; $('#cmdk2').onclick = palette;
+  if (!state.keys) { state.keys = true; document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k' && state.me) { e.preventDefault(); palette(); } }); }
   updateUnread(me.unread);
   const q = () => { const n = queueLength(); const el = $('#queue'); if (!el) return; el.hidden = !n; el.textContent = `${n} waiting to sync`; };
   onQueueChange(q); q();
@@ -118,7 +107,45 @@ function shell() {
     if (navigator.onLine && queueLength()) { await flushQueue(); q(); }
   }, 45000);
 }
-function updateUnread(n) { const el = $('#unread'); if (el) { el.textContent = n; el.className = `badge ${n ? 'bad' : ''}`; } }
+
+// Command palette: jump to any page, player or quick action.
+let paletteOpen = false;
+async function palette() {
+  if (paletteOpen) return;
+  paletteOpen = true;
+  const me = state.me;
+  const pages = nav(me).filter((i) => !i.sec).map((i) => ({ group: 'Pages', label: i.label, href: i.href, ic: i.ic }));
+  const actions = [];
+  if (me.caps['calendar.edit']) actions.push({ group: 'Actions', label: 'New event', href: '/calendar?new=1', ic: 'plus' });
+  if (me.caps['messages.send']) actions.push({ group: 'Actions', label: 'New announcement', href: '/messages/announcements?new=1', ic: 'plus' });
+  if (me.caps.staff) actions.push({ group: 'Actions', label: 'Take attendance', href: '/attendance', ic: 'calendar-check' }, { group: 'Actions', label: 'Season plan', href: '/season', ic: 'calendar' });
+  let people = [];
+  const m = modal({ title: 'Search', body: html`<div class="cmdk"><input id="cq" placeholder="Search pages, players and actions" autocomplete="off"><ul id="cl"></ul></div>` });
+  m.root.classList.add('cmdk');
+  const bg = m.root.closest('.modal-bg');
+  new MutationObserver(() => { if (!document.body.contains(bg)) paletteOpen = false; }).observe(document.body, { childList: true });
+  if (me.caps.staff) api.get('/api/players').then((list) => { people = list.map((p) => ({ group: 'Players', label: `${p.name}${p.jersey != null ? ` #${p.jersey}` : ''}`, sub: [p.team, p.positions.join('/')].filter(Boolean).join(' · '), href: `/players/${p.id}`, ic: 'user' })); draw(); }).catch(() => {});
+  let sel = 0; let shown = [];
+  const draw = () => {
+    const q = m.root.querySelector('#cq').value.trim().toLowerCase();
+    const all = [...actions, ...pages, ...people];
+    shown = (q ? all.filter((x) => (x.label + ' ' + (x.sub || '')).toLowerCase().includes(q)) : [...actions, ...pages]).slice(0, 40);
+    sel = Math.min(sel, Math.max(0, shown.length - 1));
+    let last = '';
+    set(m.root.querySelector('#cl'), shown.length ? shown.map((x, i) => { const g = x.group !== last ? html`<div class="grp">${x.group}</div>` : ''; last = x.group; return html`${g}<li data-i="${i}" class="${i === sel ? 'on' : ''}">${icon(x.ic || 'right', 15)}<span>${x.label}</span>${x.sub ? html`<span class="k">${x.sub}</span>` : ''}</li>`; }) : html`<div class="empty">No matches</div>`);
+  };
+  const go = (x) => { if (!x) return; m.close(); paletteOpen = false; navigate(x.href); };
+  const inp = m.root.querySelector('#cq');
+  inp.addEventListener('input', () => { sel = 0; draw(); });
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); draw(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); draw(); }
+    if (e.key === 'Enter') { e.preventDefault(); go(shown[sel]); }
+  });
+  on(m.root, 'click', 'li[data-i]', (e, li) => go(shown[Number(li.dataset.i)]));
+  draw();
+}
+function updateUnread(n) { const el = $('#unread'); if (el) { el.textContent = n > 99 ? '99+' : n; el.hidden = !n; } }
 
 async function openNotifications() {
   let list = [];
@@ -153,15 +180,24 @@ async function route() {
   let match = null; let params = {};
   for (const r of compiled) { const m = path.match(r.re); if (m) { match = r; r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); }); break; } }
   if (!$('#content')) shell();
+  const alias = { '/teams': '/players', '/season': '/development', '/reports/team': '/development', '/account': '/settings' };
+  const navPath = alias[path] || (path.startsWith('/reports/') ? '/development' : path);
+  let best = null;
   document.querySelectorAll('#nav a').forEach((a) => {
     const h = a.dataset.nav;
-    a.classList.toggle('on', h === '/' ? path === '/' : path === h || path.startsWith(h + '/') || (h === '/players' && path === '/teams'));
+    const hit = h === '/' ? navPath === '/' : navPath === h || navPath.startsWith(h + '/');
+    if (hit && (!best || h.length > best.dataset.nav.length)) best = a;
   });
+  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a === best));
   $('#side').classList.remove('open');
   const content = $('#content');
   if (!match) { set(content, html`<div class="empty">Page not found. <a href="/">Go home</a></div>`); return; }
   const title = match.title;
   $('#title').textContent = title;
+  const onNav = document.querySelector('#nav a.on');
+  const secLabel = onNav ? onNav.dataset.label : '';
+  $('#crumbsec').textContent = secLabel && secLabel !== title ? secLabel : '';
+  $('#crumbsep').hidden = !(secLabel && secLabel !== title);
   document.title = `${title} · Program Manager`;
   set(content, html`<div class="muted" style="padding:20px 0">Loading…</div>`);
   const token = (state.page = Symbol('page'));

@@ -150,11 +150,12 @@ async function flows() {
   });
   await step('depth chart move', async () => {
     await page.goto(`${base}/depth/${ochart}`, { waitUntil: 'networkidle' });
-    const first = page.locator('.slot').first().locator('.pcard').first();
-    await first.click();
-    await page.locator('.slot[data-slot="RB"] .sl').click();
+    await page.locator('.dc-cell .chip').first().click();
+    await page.locator('.dc-cell[data-slot="RB"][data-idx="3"]').click();
     await page.click('#save');
     await page.locator('.toast', { hasText: 'saved' }).waitFor();
+    await page.click('[data-view=field]');
+    await page.locator('.fieldview svg').waitFor();
   });
   await step('chat message', async () => {
     await page.goto(`${base}/messages/chat/${chat}`, { waitUntil: 'networkidle' });

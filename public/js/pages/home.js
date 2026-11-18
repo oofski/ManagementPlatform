@@ -1,5 +1,6 @@
 // Home screens: head coach / staff dashboard (SEA-7) and player / parent view (SEA-8).
 import { api } from '../api.js';
+import { icon } from '../icons.js';
 import { html, set, fmtDT, fmtTime, fmtDate, ago, statusBadge, availBadge, empty, bar, pct, cap, todayISO } from '../ui.js';
 
 export default async function home(el, ctx) {
@@ -12,8 +13,8 @@ function staffHome(el, ctx, d) {
   const av = d.availability || {};
   const totalPlayers = (av.available || 0) + (av.limited || 0) + (av.out || 0);
   set(el, html`
-  <div class="page-head"><div><h1>Good ${new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}, ${ctx.me.user.name.split(' ')[0]}</h1><div class="sub">${fmtDate(todayISO(), { year: true })} · ${ctx.me.season?.name || ''}</div></div>
-    <div class="actions">${ctx.me.caps['calendar.edit'] ? html`<a class="btn" href="/calendar?new=1">New event</a>` : ''}${ctx.me.caps['messages.send'] ? html`<a class="btn" href="/messages/announcements?new=1">Announcement</a>` : ''}<a class="btn primary" href="/attendance">Take attendance</a></div></div>
+  <div class="page-head"><div><h1>Overview</h1><div class="sub">${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${ctx.me.season?.name || ''}</div></div>
+    <div class="actions">${ctx.me.caps['calendar.edit'] ? html`<a class="btn" href="/calendar?new=1">${icon('plus', 14)} New event</a>` : ''}${ctx.me.caps['messages.send'] ? html`<a class="btn" href="/messages/announcements?new=1">Announcement</a>` : ''}<a class="btn primary" href="/attendance">${icon('calendar-check', 14)} Take attendance</a></div></div>
   ${d.conflicts ? html`<div class="notice warn">${d.conflicts} offline change(s) conflict with newer edits. <a href="/attendance">Review on the attendance page</a>.</div>` : ''}
   ${d.open_reports || d.pending_blocks ? html`<div class="notice warn">${d.open_reports ? `${d.open_reports} reported or flagged message(s)` : ''}${d.open_reports && d.pending_blocks ? ' · ' : ''}${d.pending_blocks ? `${d.pending_blocks} parent contact-block request(s)` : ''} need review. <a href="/messages/moderation">Open moderation</a></div>` : ''}
   <div class="grid g4" style="margin-bottom:14px">
