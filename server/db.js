@@ -492,6 +492,8 @@ export function openDb(file) {
   addCol('player_profiles', 'primary_group', 'TEXT');
   // v2 playbook: play tags as structured checkboxes (play type, distance, down & distance).
   addCol('plays', 'situation', `TEXT DEFAULT '{}'`);
+  // C-15/F-18: an athlete-logged set far above the current max is kept but held for coach review.
+  addCol('wt_logs', 'review', 'TEXT');
   return wrap(db);
 }
 

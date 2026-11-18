@@ -398,6 +398,64 @@ test('F-18 recruiting profile: tests pulled from records, edits need coach appro
   assert.equal((await player.get('/api/fb/recruiting')).status, 403);
 });
 
+test('F-18/F-8 recruiting: lifts come from coach-recorded tests only; weight only for body-data viewers', async () => {
+  const sq = t.db.get(`SELECT id FROM exercises WHERE program_id=1 AND test_key='squat' ORDER BY id LIMIT 1`).id;
+  // an athlete's own logged set never shows as a recruiting lift
+  t.db.insert('wt_logs', { player_id: player.id, exercise_id: sq, set_no: 1, reps: 1, weight: 995, date: today() });
+  const coachBest = t.db.get(`SELECT max(value) v FROM tests WHERE player_id=? AND test_key='squat' AND by_user IS NOT NULL`, player.id).v;
+  const r = await head.get(`/api/fb/recruiting/${player.id}`);
+  assert.ok(r.body.lifts.length);
+  assert.ok(r.body.lifts.every((l) => l.weight !== 995));
+  assert.equal(r.body.lifts.find((l) => l.test_key === 'squat').weight, coachBest);
+  assert.equal(typeof r.body.player.weight, 'number', 'the head coach has body-data access');
+  assert.equal((await qbc.get(`/api/fb/recruiting/${player.id}`)).body.player.weight, null, 'a position coach does not');
+  assert.equal((await player.get(`/api/fb/recruiting/${player.id}`)).body.player.weight, null);
+  await t.setSettings({ family_sees_bodyweight: true });
+  assert.equal(typeof (await player.get(`/api/fb/recruiting/${player.id}`)).body.player.weight, 'number');
+  await t.setSettings({ family_sees_bodyweight: false });
+});
+
+test('F-14/F-12 emergency medical details and concussion cases are hidden from volunteers', async () => {
+  const em = t.db.get(`SELECT id FROM fb_forms WHERE program_id=1 AND kind='emergency' AND active=1 LIMIT 1`).id;
+  const sig = 'data:image/png;base64,iVBORw0KGgo=';
+  const s = await parent.post(`/api/fb/forms/${em}/sign`, { player_id: player.id, typed_name: 'Lisa Parent', signature: sig, agree: true, data: { contact_name: 'Grandma', contact_phone: '555-0199', allergies: 'Peanuts', medications: 'Inhaler', conditions: 'Asthma' } });
+  assert.equal(s.status, 200);
+  const vol = await t.as('Team manager (volunteer)');
+  const v = await vol.get(`/api/fb/emergency/${player.id}`);
+  assert.equal(v.status, 200);
+  assert.equal(v.body.data.contact_phone, '555-0199');
+  for (const k of ['allergies', 'medications', 'conditions']) assert.equal(v.body.data[k], undefined, k);
+  assert.equal((await (await t.as('Equipment manager')).get(`/api/fb/emergency/${player.id}`)).body.data.allergies, undefined);
+  for (const u of [trainer, head, qbc, await t.as('Athletic director'), parent]) assert.equal((await u.get(`/api/fb/emergency/${player.id}`)).body.data.allergies, 'Peanuts');
+  // concussion cases: volunteers and other support staff without eligibility access get nothing
+  assert.equal((await vol.get('/api/fb/concussions')).status, 403);
+  const anyCase = t.db.get('SELECT id FROM fb_concussions WHERE program_id=1 LIMIT 1').id;
+  assert.equal((await vol.get(`/api/fb/concussions/${anyCase}`)).status, 403);
+  assert.equal((await (await t.as('Athletic director')).get('/api/fb/concussions')).status, 200);
+  assert.equal((await coach.get('/api/fb/concussions')).status, 200);
+});
+
+test('C-2 eligibility and attendance use the weight room position groups (K/P, not P)', async () => {
+  const k = t.players(`p.positions = '["P"]'`)[0] || t.players(`p.positions = '["K"]'`)[0];
+  const r = await head.get('/api/fb/eligibility');
+  assert.equal(r.body.players.find((x) => x.player_id === k.id).group, 'K/P');
+  assert.ok(!r.body.players.some((x) => ['P', 'K', 'RB', 'TE', 'LS', 'RET'].includes(x.group)));
+});
+
+test('seeded class years follow the school year: seniors graduate at the end of this school year', async () => {
+  const d = today(); const y = Number(d.slice(0, 4));
+  const end = Number(d.slice(5, 7)) >= 7 ? y + 1 : y;
+  const years = t.db.all(`SELECT DISTINCT p.class_year y FROM player_profiles p JOIN users u ON u.id=p.user_id WHERE u.program_id=1 AND p.class_year IS NOT NULL AND u.email LIKE '%@students.ridgeview.example' ORDER BY y`).map((r) => r.y);
+  assert.deepEqual(years, [end, end + 1, end + 2, end + 3]);
+  const seniors = (await head.get('/api/fb/recruiting')).body.filter((x) => x.senior);
+  assert.ok(seniors.length > 0, 'recruiting has seniors');
+  const fr = t.players('p.team_id=?', t.teams.Freshman)[0];
+  const norms = await head.get('/api/strength/norms?test_key=forty');
+  assert.ok(Object.keys(norms.body.by_grade).every((g) => Number(g) >= 9 && Number(g) <= 12));
+  const freshRow = (await head.get(`/api/strength/battery?team_id=${t.teams.Freshman}`)).body.rows.find((x) => x.id === fr.id);
+  assert.equal(freshRow.grade, 9);
+});
+
 test('C-24 season rollover snapshots each athlete into the archive and shows history', async () => {
   const before = t.db.get('SELECT count(*) n FROM fb_season_archive').n;
   const season = t.db.get('SELECT * FROM seasons WHERE active=1');

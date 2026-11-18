@@ -20,6 +20,8 @@ export function seed(db) {
   const day = today();
   const monday = (() => { const d = parseLocal(day + 'T00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return fmtLocal(d).slice(0, 10); })();
   const year = Number(day.slice(0, 4));
+  // Graduation year of the current school year (it ends in June): seniors are this class, juniors +1, and so on.
+  const gradYear = Number(day.slice(5, 7)) >= 7 ? year + 1 : year;
 
   db.tx(() => {
     const pid = db.insert('programs', { name: 'Ridgeview Football', school: 'Ridgeview High School', state: 'TX', settings: { ...DEFAULT_SETTINGS, leaderboard: true, players_see_ratings: false, coach_export_plays: false } });
@@ -84,7 +86,7 @@ export function seed(db) {
     const usedNames = new Set();
     const name = () => { let n; do { n = `${pick(FIRST)} ${pick(LAST)}`; } while (usedNames.has(n)); usedNames.add(n); return n; };
     const plan = [
-      [tV, 46, [year + 1, year + 2, year + 1, year]], [tJR, 16, [year + 2, year + 3]], [tJB, 15, [year + 2, year + 3]], [tF, 20, [year + 3]],
+      [tV, 46, [gradYear + 1, gradYear + 2, gradYear + 1, gradYear]], [tJR, 16, [gradYear + 2, gradYear + 3]], [tJB, 15, [gradYear + 2, gradYear + 3]], [tF, 20, [gradYear + 3]],
     ];
     const dist = ['QB', 'QB', 'RB', 'RB', 'RB', 'WR', 'WR', 'WR', 'WR', 'WR', 'TE', 'TE', 'OL', 'OL', 'OL', 'OL', 'OL', 'OL', 'OL', 'DL', 'DL', 'DL', 'DL', 'DL', 'LB', 'LB', 'LB', 'LB', 'DB', 'DB', 'DB', 'DB', 'DB', 'DB'];
     for (const [team, count, classes] of plan) {
@@ -163,6 +165,9 @@ export function seed(db) {
       ev({ type: 'game', title: `${home ? 'vs' : '@'} ${opp}`, start: `${addDays(mon, 4)}T19:00`, end: `${addDays(mon, 4)}T22:00`, location: home ? 'Ridgeview Stadium' : `${opp} Stadium`, audience: [`team:${tV}`], details: { opponent: opp, home_away: home ? 'home' : 'away', kickoff: '19:00', report_time: '17:00', bus_departure: home ? undefined : '16:15', uniform: home ? 'Home black' : 'Away white' } });
       ev({ type: 'game', title: `JV ${home ? '@' : 'vs'} ${opp}`, start: `${addDays(mon, 3)}T18:00`, end: `${addDays(mon, 3)}T20:30`, location: home ? `${opp} Stadium` : 'Ridgeview Stadium', audience: [`level:${jv}`], details: { opponent: opp, home_away: home ? 'away' : 'home', kickoff: '18:00', report_time: '16:45' } });
     }
+    // F-4: next summer's camp (the summer that ends this school year).
+    ev({ type: 'camp', title: 'Ridgeview summer football camp', start: `${gradYear}-06-15T08:30`, end: `${gradYear}-06-15T15:00`, location: 'Ridgeview Stadium', audience: ['program'], season_id: null,
+      details: { location_details: 'Check in at the field house; drills on the main field and practice field B', what_to_bring: 'Cleats, water bottle, packed lunch', cost: '$40 (waived on request)' } });
     const social = ev({ type: 'social', title: 'Team dinner at Coach Whitfield’s', start: `${addDays(monday, 2)}T18:30`, end: `${addDays(monday, 2)}T20:00`, location: 'Ridgeview cafeteria', audience: ['program'], rsvp_deadline: `${addDays(monday, 1)}T21:00`, details: { head_count: 'RSVP by Tuesday', cost: 'Free' } });
 
     // RSVPs and attendance for past events

@@ -127,6 +127,7 @@ export default function auth(ctx) {
       settings: {
         players_see_ratings: s.players_see_ratings, players_see_trends: s.players_see_trends, leaderboard: s.leaderboard,
         game_mode: s.game_mode, rating_scale: s.rating_scale, quiet_start: s.quiet_start, quiet_end: s.quiet_end, chat_files: s.chat_files,
+        family_sees_bodyweight: !!s.family_sees_bodyweight,
       },
     };
   });

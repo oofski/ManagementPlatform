@@ -278,3 +278,39 @@ test('weight room data is isolated per program (reads and deletes)', async () =>
   assert.ok(t.db.get('SELECT 1 FROM tests WHERE id=?', other.test));
   assert.ok(t.db.get('SELECT 1 FROM wt_logs WHERE id=?', other.wtLog));
 });
+
+test('C-15/F-18 logged sets are limited to 0-1000 lb and 0-100 reps', async () => {
+  const base = { exercise_id: ex['Goblet squat'], set_no: 7, reps: 10, weight: 60 };
+  assert.equal((await player.post('/api/wt-logs', { ...base, weight: 1001 })).status, 400);
+  assert.equal((await player.post('/api/wt-logs', { ...base, weight: -5 })).status, 400);
+  assert.equal((await player.post('/api/wt-logs', { ...base, reps: 101 })).status, 400);
+  assert.equal((await player.post('/api/wt-logs', { ...base, reps: 'lots' })).status, 400);
+  assert.equal((await player.post('/api/wt-logs', { ...base, weight: 1000, reps: 100, set_no: 8 })).status, 200);
+  assert.equal((await player.post('/api/wt-logs', { ...base, weight: 0, reps: 0, set_no: 9 })).status, 200);
+  assert.ok(!t.db.get('SELECT 1 FROM wt_logs WHERE player_id=? AND weight>1000', player.id));
+});
+
+test('C-3 a coach limited to groups changes workouts and records tests only for their own athletes', async () => {
+  const qbc = await t.as('QB coach');
+  const qb = t.varsity(`p.positions LIKE '%"QB"%'`)[0];
+  const ol = t.varsity(`p.positions LIKE '%"OL"%'`)[0];
+  const asn = await sc.post('/api/wt-assignments', { wt_program_id: progId, audience: [`team:${t.teams.Varsity}`] });
+  assert.equal(asn.status, 200);
+  // assignment audiences
+  assert.equal((await qbc.post('/api/wt-assignments', { wt_program_id: progId, audience: [`team:${t.teams.Varsity}`] })).status, 403);
+  assert.equal((await qbc.post('/api/wt-assignments', { wt_program_id: progId, audience: ['pos:QB'] })).status, 200);
+  // individual overrides
+  const ov = { exercise_id: ex['Back squat'], alt_exercise_id: ex['Goblet squat'] };
+  assert.equal((await qbc.post(`/api/wt-assignments/${asn.body.id}/overrides`, { ...ov, player_id: ol.id })).status, 403);
+  assert.equal((await qbc.post(`/api/wt-assignments/${asn.body.id}/overrides`, { ...ov, player_id: qb.id })).status, 200);
+  const olOv = await sc.post(`/api/wt-assignments/${asn.body.id}/overrides`, { ...ov, player_id: ol.id });
+  assert.equal(olOv.status, 200, 'the strength coach (no group limits) is program-wide');
+  assert.equal((await qbc.del(`/api/wt-overrides/${olOv.body.id}`)).status, 403);
+  // test recording and set logging
+  assert.equal((await qbc.post('/api/tests', { player_id: ol.id, test_key: 'vertical', value: 30 })).status, 403);
+  assert.equal((await qbc.post('/api/tests', { player_id: qb.id, test_key: 'vertical', value: 30 })).status, 200);
+  const batch = await qbc.post('/api/tests/batch', { test_key: 'broad', entries: [{ player_id: qb.id, value: 100 }, { player_id: ol.id, value: 100 }] });
+  assert.ok(batch.body.results[1].error);
+  assert.equal((await qbc.post('/api/wt-logs', { player_id: ol.id, exercise_id: ex['Goblet squat'], set_no: 1, reps: 5, weight: 50 })).status, 403);
+  assert.equal((await trainer.post('/api/wt-logs', { player_id: ol.id, exercise_id: ex['Goblet squat'], set_no: 1, reps: 5, weight: 50 })).status, 200, 'trainers are program-wide');
+});

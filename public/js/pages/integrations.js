@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { html, set, $, on, toast, errToast, formData, options, checked, field, audienceField, wireAudience, fmtDT, ago, empty, tabs, todayISO, addDaysISO } from '../ui.js';
 import { connection, setup } from './integrations-setup.js';
 
-const TYPES = [['game', 'Game'], ['practice', 'Practice'], ['lift', 'Lift'], ['film', 'Film'], ['meeting', 'Staff meeting'], ['social', 'Team event'], ['other', 'Other']];
+const TYPES = [['game', 'Game'], ['practice', 'Practice'], ['lift', 'Lift'], ['film', 'Film'], ['meeting', 'Staff meeting'], ['social', 'Team event'], ['camp', 'Camp'], ['other', 'Other']];
 const TABS = [['connection', 'Connection'], ['gmail', 'Gmail'], ['calendar', 'Calendar'], ['sheets', 'Sheets'], ['docs', 'Docs'], ['setup', 'Setup']];
 // Disables a button and shows what is happening while fn runs.
 async function busy(btn, label, fn) {

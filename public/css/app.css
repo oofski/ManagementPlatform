@@ -617,3 +617,6 @@ tr.wr-flag td { background: color-mix(in srgb, var(--bad-soft) 55%, var(--panel)
 .wr-tv-foot { padding: 10px 32px; color: var(--faint); font-size: 13px; }
 @media (max-width: 760px) { .wr-tv-main { grid-template-columns: 1fr; padding: 0 16px; } .wr-tv-head { padding: 16px; flex-wrap: wrap; } .wr-tv-banner { margin: 0 16px 8px; } .wr-tv-side { width: auto; } }
 @media print { .wr-full { position: static; } .wr-bar { display: none; } }
+
+/* F-4: camp events on the calendar (calendar.js TYPE_LABEL camp) */
+.type-camp { --tc: var(--ok); }

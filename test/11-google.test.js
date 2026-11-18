@@ -519,6 +519,13 @@ test('sheets: roster and test-max imports reuse the app import; exports create s
   assert.equal(sp.jersey, 88);
   assert.deepEqual(JSON.parse(sp.positions), ['WR']);
   assert.ok(t.db.get(`SELECT 1 FROM audit WHERE action='google_import_roster'`));
+  // all or nothing: one bad row rolls the whole sheet back and comes back as a 400 with the row errors
+  fake.sheets.roster2 = { values: [['Name', 'Team', 'Position'], ['Atomic Sheet', 'Varsity', 'WR'], ['', 'Varsity', 'LB']] };
+  const aon = await head.post('/api/google/sheets/roster-import', { url: 'https://docs.google.com/spreadsheets/d/roster2/edit', all_or_nothing: true });
+  assert.equal(aon.status, 400, JSON.stringify(aon.body));
+  assert.equal(aon.body.created, 0);
+  assert.deepEqual(aon.body.errors.map((e) => e.row), [2]);
+  assert.equal(t.db.get(`SELECT count(*) n FROM users WHERE name='Atomic Sheet'`).n, 0);
 
   fake.sheets.maxes = { values: [['Name', 'Squat', 'Bench', '40 yard'], ['Sheet Player', '315', '225', '4.9'], ['Nobody Here', '100', '', '']] };
   const tm = await head.post('/api/google/sheets/tests-import', { url: 'https://docs.google.com/spreadsheets/d/maxes/edit', date: today() });

@@ -52,7 +52,7 @@ export function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname,
     } catch (e) {
       const status = e instanceof HttpError ? e.status : 500;
       if (status === 500) console.error(e);
-      send(res, status, { error: e.message || 'Server error' });
+      send(res, status, { ...(e instanceof HttpError && e.extra ? e.extra : {}), error: e.message || 'Server error' });
     }
   });
 

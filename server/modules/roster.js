@@ -1,10 +1,12 @@
 // Module 4: Players and teams — levels, teams, positions, player accounts and profiles,
 // measurements, availability, roster import/export and depth charts.
-import { fail, need, token, nowLocal, today } from '../core.js';
+import { fail, need, token, nowLocal, today, HttpError } from '../core.js';
 import { j, jAll } from '../db.js';
 import { csv, csvResponse } from '../app.js';
 import { normalizeImportRow, linkImportedParents } from './fb-roster.js';
 import { archiveSeason } from './football.js';
+import { seesBodyWeight } from '../body-privacy.js';
+import { athleteGroup } from '../strength-data.js';
 
 export default function roster({ router, db, core }) {
   const { can, isStaff, isAdmin, audit, notify } = core;
@@ -15,8 +17,10 @@ export default function roster({ router, db, core }) {
 
   // Can this viewer see this player's profile? Staff yes; player self; parent of player.
   const canSeePlayer = (u, id) => isStaff(u) || core.linkedPlayers(u).includes(id);
-  // PLR-12 / SEC-1: sensitive fields only for coaches/trainers/admins (and the player and parents for body data).
+  // PLR-12 / SEC-1: height only for coaches/trainers/admins (and the player and parents on the profile).
+  // F-8: body weight follows the single rule in body-privacy.js (body-data staff; families only when the head coach allows).
   const sensitiveFor = (u) => isAdmin(u) || u.role === 'coach' || u.role === 'trainer';
+  const seesWeight = (u, pid) => seesBodyWeight(core, u, pid);
 
   function latest(playerId, kind) {
     return db.get('SELECT value, date FROM measurements WHERE player_id=? AND kind=? ORDER BY date DESC, id DESC LIMIT 1', playerId, kind);
@@ -29,6 +33,8 @@ export default function roster({ router, db, core }) {
       id: r.user_id || r.id, name: r.name, jersey: r.jersey, class_year: r.class_year, photo: r.photo,
       team_id: r.team_id, team: team ? (team.name === team.level_name ? team.name : `${team.level_name} ${team.name}`) : null, level_id: team?.level_id, level: team?.level_name,
       units: r.units, positions: r.positions, primary_group: r.primary_group || r.positions[0] || null,
+      // C-2: the same position group the weight room and eligibility use (e.g. K/P, RB/TE).
+      group: athleteGroup(r.primary_group, r.positions) || r.primary_group || r.positions[0] || null,
       availability: r.availability, avail_note: null, return_date: r.return_date,
       archived: !!r.archived, joined: !!r.joined_at, pending_invite: !!r.invite_code,
     };
@@ -38,10 +44,8 @@ export default function roster({ router, db, core }) {
       out.personal = r.personal;
       out.avail_note = isStaff(viewer) || self ? r.avail_note : null;
     }
-    if (sensitiveFor(viewer) || (self && full)) {
-      const h = latest(out.id, 'height'); const w = latest(out.id, 'weight');
-      out.height = h?.value ?? null; out.weight = w?.value ?? null;
-    }
+    if (sensitiveFor(viewer) || (self && full)) out.height = latest(out.id, 'height')?.value ?? null;
+    if (seesWeight(viewer, out.id)) out.weight = latest(out.id, 'weight')?.value ?? null;
     if (isAdmin(viewer) || (isStaff(viewer) && viewer.role !== 'staff')) {
       out.email = r.email; out.nutrition_opt_out = !!r.nutrition_opt_out;
     }
@@ -150,7 +154,8 @@ export default function roster({ router, db, core }) {
     }
     const out = shapePlayer(r, user, { full: true });
     if (sensitiveFor(user) || core.linkedPlayers(user).includes(id)) {
-      out.measurements = db.all(`SELECT * FROM measurements WHERE player_id=? AND kind IN ('height','weight') ORDER BY date`, id);
+      const kinds = seesWeight(user, id) ? `('height','weight')` : `('height')`;
+      out.measurements = db.all(`SELECT * FROM measurements WHERE player_id=? AND kind IN ${kinds} ORDER BY date`, id);
     }
     if (isStaff(user)) audit(user, 'view', 'player', id);
     return out;
@@ -212,7 +217,9 @@ export default function roster({ router, db, core }) {
     };
     const results = { created: 0, parents: 0, errors: [] };
     const posRows = db.all('SELECT code, unit FROM positions WHERE program_id=?', user.program_id);
-    db.tx(() => {
+    const ROLLBACK = new Error('rollback');
+    try {
+      db.tx(() => {
       rows.forEach((r, i) => {
         try {
           // C-1: grade or class year, a single position column, parent contacts (fb-roster.js).
@@ -223,8 +230,15 @@ export default function roster({ router, db, core }) {
           try { results.parents += linkImportedParents(db, user, id, x.parents); } catch (e) { results.errors.push({ row: i + 1, error: `Player added; parent contact skipped: ${e.message}` }); }
         } catch (e) { results.errors.push({ row: i + 1, error: e.message }); }
       });
-      if (results.errors.length && body.all_or_nothing) throw new Error('rollback');
-    });
+      if (results.errors.length && body.all_or_nothing) throw ROLLBACK;
+      });
+    } catch (e) {
+      if (e !== ROLLBACK) throw e;
+      // All or nothing: nothing was saved; report the rows that need fixing.
+      const err = new HttpError(400, `Nothing was imported: ${results.errors.length} row(s) need fixing`);
+      err.extra = { created: 0, parents: 0, errors: results.errors };
+      throw err;
+    }
     audit(user, 'import_roster', 'roster', null, { created: results.created, errors: results.errors.length });
     return results;
   });
@@ -260,6 +274,8 @@ export default function roster({ router, db, core }) {
     need(can(user, 'availability.edit'), 403, 'Only trainers and coaches set availability');
     const id = Number(params.id);
     need(playerOf(user.program_id, id), 404, 'Player not found');
+    // C-3: trainers and coaches without group limits are program-wide; a scoped coach sets only their own players.
+    need(isAdmin(user) || user.role === 'trainer' || !core.staffScopes(user.id).length || core.managesAudience(user, [`player:${id}`]), 403, 'You can only set availability for players in your own groups');
     // F-10: full (stored as 'available'), limited, out, cleared. A player in concussion protocol stays out (F-12).
     if (body.availability === 'full') body.availability = 'available';
     need(['available', 'limited', 'out', 'cleared'].includes(body.availability), 400, 'Status must be full, limited, out or cleared');
@@ -372,7 +388,8 @@ export default function roster({ router, db, core }) {
       const r = db.get(`SELECT u.id, u.name, p.jersey, p.class_year, p.photo, p.availability FROM users u JOIN player_profiles p ON p.user_id=u.id WHERE u.id=?`, id);
       if (!r) continue;
       if (show) {
-        r.height = latest(id, 'height')?.value ?? null; r.weight = latest(id, 'weight')?.value ?? null;
+        r.height = latest(id, 'height')?.value ?? null;
+        if (seesWeight(user, id)) r.weight = latest(id, 'weight')?.value ?? null;
         if (can(user, 'ratings.view')) r.avg_rating = db.get('SELECT round(avg(value),1) v FROM ratings WHERE player_id=?', id).v;
       } else delete r.availability;
       cards[id] = r;

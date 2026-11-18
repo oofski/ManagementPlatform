@@ -4,8 +4,8 @@ import { api } from '../api.js';
 import { html, set, $, on, modal, toast, errToast, formData, options, checked, field, audienceField, wireAudience, fmtDate, fmtTime, fmtDT, ago,
   parse, iso, todayISO, addDaysISO, mondayOf, statusBadge, cap, empty, confirmDialog, raw, ROLE } from '../ui.js';
 
-const TYPE_LABEL = { game: 'Game', practice: 'Practice', lift: 'Lift', film: 'Film', meeting: 'Staff meeting', social: 'Team event', other: 'Other' };
-const FIELD_LABEL = { opponent: 'Opponent', home_away: 'Home or away', kickoff: 'Kickoff', bus_departure: 'Bus departure', report_time: 'Report time', uniform: 'Uniform', what_to_bring: 'What to bring', indoor_outdoor: 'Indoor or outdoor', head_count: 'Head count', cost: 'Cost', agenda: 'Agenda', wt_assignment_id: 'Lifting program' };
+const TYPE_LABEL = { game: 'Game', practice: 'Practice', lift: 'Lift', film: 'Film', meeting: 'Staff meeting', social: 'Team event', camp: 'Camp', other: 'Other' };
+const FIELD_LABEL = { opponent: 'Opponent', home_away: 'Home or away', kickoff: 'Kickoff', bus_departure: 'Bus departure', report_time: 'Report time', uniform: 'Uniform', what_to_bring: 'What to bring', indoor_outdoor: 'Indoor or outdoor', head_count: 'Head count', cost: 'Cost', agenda: 'Agenda', wt_assignment_id: 'Lifting program', location_details: 'Location details' };
 const REASONS = ['sick', 'injured', 'family', 'academic', 'transportation', 'other'];
 
 export default async function calendar(el, ctx) {
@@ -84,6 +84,7 @@ function typeFields(type, d = {}) {
   if (type === 'practice') return html`<div class="fields">${t('what_to_bring', 'Full pads, water')}${field('Indoor or outdoor', html`<select name="d_indoor_outdoor">${options([['outdoor', 'Outdoor'], ['indoor', 'Indoor']], d.indoor_outdoor || 'outdoor')}</select>`)}</div>`;
   if (type === 'social') return html`<div class="fields">${t('head_count', 'Expected guests')}${t('cost', 'Free')}</div><div class="help" style="margin-bottom:10px">Set an RSVP deadline below.</div>`;
   if (type === 'lift' || type === 'film') return html`<div class="fields">${t('what_to_bring')}</div>`;
+  if (type === 'camp') return html`<div class="fields">${t('location_details', 'Field 2, check in at the gym')}${t('what_to_bring', 'Cleats, water, lunch')}${t('cost', '$40, waived on request')}</div>`;
   if (type === 'meeting') return html`${field('Agenda', html`<textarea name="d_agenda">${d.agenda || ''}</textarea>`)}<div class="help" style="margin-bottom:10px">Staff meetings are visible to coaches only.</div>`;
   return '';
 }

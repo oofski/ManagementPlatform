@@ -92,6 +92,7 @@ async function heat(el, ctx, head, me) {
 }
 
 async function concussion(el, ctx, head, me) {
+  if (ctx.me.user.role === 'staff' && !me.eligibility_view) { set(el, html`${head}${empty('Return-to-play cases are visible to coaches, the athletic trainer and staff with eligibility access.')}`); return; }
   const [cases, players] = await Promise.all([api.get('/api/fb/concussions'), api.get('/api/players')]);
   const active = cases.filter((c) => c.status === 'active'); const closed = cases.filter((c) => c.status !== 'active');
   const canOpen = ctx.me.caps['availability.edit'] || me.medical;

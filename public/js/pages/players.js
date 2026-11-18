@@ -15,6 +15,9 @@ async function roster(el, ctx) {
   const [list, st] = await Promise.all([api.get('/api/players' + (q.archived ? '?archived=1' : '')), api.get('/api/structure')]);
   const staff = ctx.me.caps.staff;
   const edit = ctx.me.caps['roster.edit'];
+  // F-8: height for coaches and trainers; body weight only for staff with body-data access.
+  const seeHt = ctx.me.user.role !== 'staff' || ctx.me.caps['body.view'];
+  const seeWt = !!ctx.me.caps['body.view'];
   const codes = [...new Set(st.positions.map((p) => p.code))];
   let sortKey = q.sort || 'name'; let dir = q.dir === 'desc' ? -1 : 1;
   const filtered = () => {
@@ -23,7 +26,7 @@ async function roster(el, ctx) {
     if (q.team_id) r = r.filter((p) => p.team_id === Number(q.team_id));
     if (q.unit) r = r.filter((p) => p.units.includes(q.unit));
     if (q.position) r = r.filter((p) => p.positions.includes(q.position));
-    if (q.group) r = r.filter((p) => p.primary_group === q.group); // C-2: one primary position group per athlete
+    if (q.group) r = r.filter((p) => p.group === q.group); // C-2: one position group per athlete (same as the weight room)
     if (q.availability) r = r.filter((p) => p.availability === q.availability);
     if (q.q) r = r.filter((p) => p.name.toLowerCase().includes(q.q.toLowerCase()) || String(p.jersey) === q.q);
     return sortRows(r, sortKey, dir);
@@ -40,15 +43,15 @@ async function roster(el, ctx) {
       <select data-f="team_id"><option value="">All teams</option>${options(teamsAll, q.team_id)}</select>
       <select data-f="unit"><option value="">All units</option>${options(Object.entries(UNIT), q.unit)}</select>
       <select data-f="position"><option value="">All positions</option>${options(codes, q.position)}</select>
-      <select data-f="group"><option value="">All position groups</option>${options(codes.map((c) => [c, `${c} group`]), q.group)}</select>
+      ${staff ? html`<select data-f="group"><option value="">All position groups</option>${options([...new Set(list.map((p) => p.group).filter(Boolean))].sort().map((g) => [g, `${g} group`]), q.group)}</select>` : ''}
       ${staff ? html`<select data-f="availability"><option value="">Any status</option>${options([['available', 'Full'], ['limited', 'Limited'], ['out', 'Out'], ['cleared', 'Cleared']], q.availability)}</select>` : ''}
       ${ctx.me.caps.admin ? html`<label class="check"><input type="checkbox" id="arch" ${checked(q.archived)}> Show archived</label>` : ''}
     </div>
     <div class="card"><div class="bd flush tbl-wrap"><table><thead><tr><th></th>${th('jersey', '#', 'num')}${th('name', 'Name')}${th('team', 'Team')}<th>Units</th><th>Positions</th>${th('class_year', 'Class', 'num')}
-      ${staff ? html`${ctx.me.caps['body.view'] || ctx.me.user.role !== 'staff' ? html`${th('height', 'Ht', 'num')}${th('weight', 'Wt', 'num')}` : ''}${th('availability', 'Status')}<th>Account</th>` : ''}</tr></thead>
+      ${staff ? html`${seeHt ? th('height', 'Ht', 'num') : ''}${seeWt ? th('weight', 'Wt', 'num') : ''}${th('availability', 'Status')}<th>Account</th>` : ''}</tr></thead>
       <tbody>${rows.map((p) => html`<tr class="click" onclick="__navigate('/players/${p.id}')"><td style="width:40px">${avatar(p.name, p.photo)}</td><td class="num"><b>${p.jersey ?? ''}</b></td><td><b>${p.name}</b>${p.archived ? html` <span class="badge">Archived</span>` : ''}</td><td>${p.team || ''}</td>
         <td>${p.units.map((u) => html`<span class="badge">${UNIT[u]}</span> `)}</td><td>${p.positions.join(', ')}</td><td class="num">${p.class_year || ''}</td>
-        ${staff ? html`${ctx.me.caps['body.view'] || ctx.me.user.role !== 'staff' ? html`<td class="num">${p.height ? `${Math.floor(p.height / 12)}'${p.height % 12}"` : ''}</td><td class="num">${p.weight ?? ''}</td>` : ''}<td>${availBadge(p.availability)}</td><td>${p.joined ? html`<span class="badge ok">Joined</span>` : html`<span class="badge warn">Invited</span>`}</td>` : ''}</tr>`)}</tbody></table>
+        ${staff ? html`${seeHt ? html`<td class="num">${p.height ? `${Math.floor(p.height / 12)}'${p.height % 12}"` : ''}</td>` : ''}${seeWt ? html`<td class="num">${p.weight ?? ''}</td>` : ''}<td>${availBadge(p.availability)}</td><td>${p.joined ? html`<span class="badge ok">Joined</span>` : html`<span class="badge warn">Invited</span>`}</td>` : ''}</tr>`)}</tbody></table>
       ${!rows.length ? empty('No players match these filters.') : ''}</div></div>`);
   const go = (patch) => ctx.navigate('/players?' + new URLSearchParams(Object.fromEntries(Object.entries({ ...q, ...patch }).filter(([, v]) => v))));
   $$('[data-f]', el).forEach((s) => { s.onchange = () => go({ [s.dataset.f]: s.value }); });
@@ -74,7 +77,7 @@ export function playerForm(ctx, st, p) {
       ${field('Jersey', html`<input type="number" name="jersey" value="${v.jersey ?? ''}" min="0" max="99">`)}${field('Class year', html`<input type="number" name="class_year" value="${v.class_year ?? ''}">`)}
       ${field('Primary position group', html`<select name="primary_group">${options([...new Set(codes.map((c) => c.code))], v.primary_group || v.positions[0] || '', { blank: '—' })}</select>`, 'The one group this athlete sits in for lifting, attendance and reports')}
       ${field('Hand', html`<select name="hand">${options(['Right', 'Left', 'Both'], v.hand || 'Right')}</select>`)}
-      ${field('Height (inches)', html`<input type="number" name="height" value="${v.height ?? ''}">`)}${field('Weight (lb)', html`<input type="number" name="weight" value="${v.weight ?? ''}">`)}${field('Measured on', html`<input type="date" name="measured_on" value="${todayISO()}">`)}
+      ${field('Height (inches)', html`<input type="number" name="height" value="${v.height ?? ''}">`)}${ctx.me.caps['body.view'] ? field('Weight (lb)', html`<input type="number" name="weight" value="${v.weight ?? ''}">`) : ''}${field('Measured on', html`<input type="date" name="measured_on" value="${todayISO()}">`)}
     </div>
     ${field('Units', html`<div class="row">${Object.entries(UNIT).map(([k, l]) => html`<label class="check"><input type="checkbox" name="units" data-multi value="${k}" ${checked(v.units.includes(k))}> ${l}</label>`)}</div>`)}
     ${field('Positions', html`<div class="row">${['offense', 'defense', 'special'].map((u) => html`<div><span class="faint" style="font-size:11px">${UNIT[u]}</span><br>${codes.filter((c) => c.unit === u).map((c) => html`<label class="check" style="margin-right:8px"><input type="checkbox" name="positions" data-multi value="${c.code}" ${checked(v.positions.includes(c.code))}> ${c.code}</label>`)}</div>`)}</div>`)}
@@ -152,7 +155,7 @@ async function profile(el, ctx, id) {
         <dt>Team</dt><dd>${p.team || '—'}</dd><dt>Units</dt><dd>${(p.units || []).map((u) => UNIT[u]).join(', ') || '—'}</dd><dt>Positions</dt><dd>${(p.positions || []).join(', ') || '—'}</dd>
         <dt>Jersey</dt><dd>${p.jersey ?? '—'}</dd><dt>Class</dt><dd>${p.class_year || '—'}</dd>
         ${p.hand !== undefined ? html`<dt>Hand</dt><dd>${p.hand || '—'}</dd>` : ''}
-        ${p.height !== undefined ? html`<dt>Height</dt><dd>${fmtH(p.height)}</dd><dt>Weight</dt><dd>${p.weight ? `${p.weight} lb` : '—'}</dd>` : ''}
+        ${p.height !== undefined ? html`<dt>Height</dt><dd>${fmtH(p.height)}</dd>` : ''}${p.weight !== undefined ? html`<dt>Weight</dt><dd>${p.weight ? `${p.weight} lb` : '—'}</dd>` : ''}
         ${p.avail_note ? html`<dt>Availability note</dt><dd>${p.avail_note}</dd>` : ''}
         ${p.email && staff ? html`<dt>Account</dt><dd>${p.joined ? 'Joined' : html`Invited <button class="sm" id="reinv">Resend invite</button>`}</dd>` : ''}
       </dl></div></div>
@@ -162,8 +165,8 @@ async function profile(el, ctx, id) {
           <div class="row"><button class="primary">Save</button><label class="btn">Change photo<input type="file" accept="image/*" id="photo" hidden></label>${p.photo ? html`<button type="button" id="nophoto">Remove photo</button>` : ''}</div></form>`
         : html`<dl class="kv">${Object.entries(p.personal).filter(([, v]) => v).map(([k, v]) => html`<dt>${cap(k)}</dt><dd>${v}</dd>`)}</dl>${!Object.values(p.personal).some(Boolean) ? html`<p class="muted">Nothing added yet.</p>` : ''}${edit && p.photo ? html`<button class="sm" id="rmphoto">Remove photo</button>` : ''}`}
       </div></div>` : ''}
-      ${p.measurements ? html`<div class="card"><div class="hd"><h2>Height and weight over the season</h2></div><div class="bd">
-        ${lineChart([{ label: 'Weight (lb)', points: hist('weight').map((m) => [m.date, m.value]) }])}
+      ${p.measurements ? html`<div class="card"><div class="hd"><h2>${hist('weight').length ? 'Height and weight over the season' : 'Height'}</h2></div><div class="bd">
+        ${hist('weight').length ? lineChart([{ label: 'Weight (lb)', points: hist('weight').map((m) => [m.date, m.value]) }]) : ''}
         <div class="s muted">Height: ${hist('height').map((m) => `${fmtH(m.value)} on ${fmtDate(m.date, { dow: false })}`).join(' · ') || '—'}</div>
       </div></div>` : ''}
     </div>

@@ -90,16 +90,25 @@ export default function strength(ctx) {
     return out;
   }
   // C-15: estimated 1RM from a logged set; a new high becomes the training max used for % loads.
-  function afterLog(user, pid, row) {
+  function afterLog(user, pid, row, { trusted = false } = {}) {
     const ex = db.get('SELECT test_key, name FROM exercises WHERE id=?', row.exercise_id);
     const key = ex?.test_key;
     if (!key || !TESTS[key]?.rep_test || !(row.weight > 0) || !(row.reps >= 1 && row.reps <= 10)) return null;
     const e1 = epley(row.weight, row.reps);
     const cur = wt.maxInfo(pid, key).max;
     if (cur != null && e1 <= cur) return null;
+    const programId = db.get('SELECT program_id FROM users WHERE id=?', pid).program_id;
+    // C-15/F-18 sanity: an athlete's own set estimating more than 15% above the current max does not move the
+    // training max, post a PR or join a club. The set is kept, flagged, and sent to the head and strength coaches.
+    if (!trusted && !can(user, 'weights.edit') && cur != null && e1 > cur * 1.15) {
+      if (row.log_id) db.run(`UPDATE wt_logs SET review='pending' WHERE id=?`, row.log_id);
+      const p = db.get('SELECT name FROM users WHERE id=?', pid);
+      const reviewers = db.all(`SELECT id FROM users WHERE program_id=? AND active=1 AND (role='head_coach' OR (role='coach' AND lower(coalesce(title,'')) LIKE '%strength%'))`, programId).map((r) => r.id);
+      core.notify(programId, reviewers, { kind: 'update', title: `${p?.name}: logged set needs review`, body: `${row.weight} x ${row.reps} on ${ex.name.toLowerCase()} estimates ${e1} lb, more than 15% above the current max of ${cur} lb. The training max was not changed.`, link: `/development/player/${pid}`, from: 'system', email: false });
+      return { review: 'pending', test_key: key, value: e1, previous: cur };
+    }
     const best = bestOf(pid, key);
     const pr = best == null || e1 > best;
-    const programId = db.get('SELECT program_id FROM users WHERE id=?', pid).program_id;
     const id = db.insert('training_maxes', { player_id: pid, test_key: key, value: e1, date: row.date || today(), source: 'session', exercise_id: row.exercise_id, log_id: row.log_id, weight: row.weight, reps: row.reps, prev_value: cur, pr: pr ? 1 : 0 });
     if (pr) {
       const p = db.get('SELECT u.name, pp.team_id FROM users u JOIN player_profiles pp ON pp.user_id=u.id WHERE u.id=?', pid);
@@ -153,6 +162,24 @@ export default function strength(ctx) {
 
   ctx.strength = { afterLog, afterTest, gameWeekFor, activationExercises, streak, liftAttendance, post };
 
+  // C-15/F-18: sets held for review (logged far above the athlete's max). Approving applies them as a coach entry.
+  router.get('/api/strength/log-reviews', ({ user }) => {
+    editor(user);
+    return db.all(`SELECT l.id, l.player_id, u.name player, l.date, l.reps, l.weight, e.name exercise FROM wt_logs l JOIN users u ON u.id=l.player_id LEFT JOIN exercises e ON e.id=l.exercise_id
+      WHERE u.program_id=? AND l.review='pending' ORDER BY l.date DESC, l.id DESC LIMIT 200`, user.program_id).filter((r) => wt.managesPlayer(user, r.player_id));
+  });
+  router.post('/api/strength/log-reviews/:id', ({ user, params, body }) => {
+    editor(user);
+    const l = db.get(`SELECT l.* FROM wt_logs l JOIN users u ON u.id=l.player_id WHERE l.id=? AND u.program_id=? AND l.review='pending'`, Number(params.id), user.program_id);
+    need(l, 404, 'Nothing to review');
+    need(wt.managesPlayer(user, l.player_id), 403, 'You can only review athletes in your own groups');
+    const ok = body.approve !== false;
+    db.run('UPDATE wt_logs SET review=? WHERE id=?', ok ? 'approved' : 'rejected', l.id);
+    const tm = ok ? afterLog(user, l.player_id, { reps: l.reps, weight: l.weight, date: l.date, exercise_id: l.exercise_id, log_id: l.id }, { trusted: true }) : null;
+    audit(user, ok ? 'approve_log' : 'reject_log', 'player', l.player_id, { log: l.id });
+    return { ok: true, training_max: tm };
+  });
+
   // ---------- meta and settings ----------
   router.get('/api/strength/meta', ({ user }) => {
     const s = core.settings(user.program_id);
@@ -188,6 +215,8 @@ export default function strength(ctx) {
     if (k === 'group') return !!db.get('SELECT 1 FROM custom_groups WHERE id=? AND program_id=?', Number(v), u.program_id);
     return false;
   };
+  // C-3: football position-group tokens (pg:OL) are checked against a coach's scopes as their position codes.
+  const scopeTokens = (tok) => (String(tok).startsWith('pg:') ? groupTokens(String(tok).slice(3)) : [String(tok)]);
   router.get('/api/strength/assignments/:id/group-overrides', ({ user, params }) => {
     staffOnly(user);
     const a = asnOf(user, params.id);
@@ -198,6 +227,7 @@ export default function strength(ctx) {
     editor(user);
     const a = asnOf(user, params.id);
     need(validToken(user, body.group_token), 400, 'Pick a team, position or group');
+    need(wt.managesTokens(user, scopeTokens(body.group_token)), 403, 'You can only change workouts for your own groups');
     for (const k of ['exercise_id', 'alt_exercise_id']) if (body[k]) need(db.get('SELECT 1 FROM exercises WHERE id=? AND program_id=?', Number(body[k]), user.program_id), 400, 'Unknown exercise');
     if (body.rpe != null && body.rpe !== '') need(Number(body.rpe) >= 1 && Number(body.rpe) <= 10, 400, 'RPE must be between 1 and 10');
     db.run('DELETE FROM wt_group_overrides WHERE assignment_id=? AND group_token=? AND coalesce(exercise_id,0)=coalesce(?,0)', a.id, body.group_token, body.exercise_id || null);
@@ -207,8 +237,9 @@ export default function strength(ctx) {
   });
   router.del('/api/strength/group-overrides/:id', ({ user, params }) => {
     editor(user);
-    const o = db.get('SELECT o.id FROM wt_group_overrides o JOIN wt_assignments a ON a.id=o.assignment_id WHERE o.id=? AND a.program_id=?', Number(params.id), user.program_id);
+    const o = db.get('SELECT o.id, o.group_token FROM wt_group_overrides o JOIN wt_assignments a ON a.id=o.assignment_id WHERE o.id=? AND a.program_id=?', Number(params.id), user.program_id);
     need(o, 404, 'Change not found');
+    need(wt.managesTokens(user, scopeTokens(o.group_token)), 403, 'You can only change workouts for your own groups');
     db.run('DELETE FROM wt_group_overrides WHERE id=?', o.id);
     return { ok: true };
   });
@@ -263,6 +294,9 @@ export default function strength(ctx) {
   router.post('/api/strength/assign-group', ({ user, body }) => {
     editor(user);
     need(POS_GROUPS[body.group], 400, 'Pick a position group');
+    if (body.team_id) need(teamIn(user, Number(body.team_id)), 400, 'Unknown team');
+    const scopeToks = body.team_id ? programPlayers(user.program_id, { teamId: body.team_id, group: body.group }).map((p) => `player:${p.id}`) : groupTokens(body.group);
+    need(wt.managesTokens(user, scopeToks), 403, 'You can only assign programs to your own groups');
     const src = wt.progOf(user.program_id, Number(body.wt_program_id));
     need(src, 404, 'Program or template not found');
     const srcMeta = wt.metaOf(src.id);
@@ -298,6 +332,7 @@ export default function strength(ctx) {
     editor(user);
     ensureTemplates(db, user.program_id);
     need(teamIn(user, Number(body.team_id)), 400, 'Pick a team');
+    need(wt.managesTokens(user, [`team:${Number(body.team_id)}`]), 403, 'You can only assign programs to your own teams');
     const tpl = db.get(`SELECT p.id FROM wt_programs p JOIN wt_program_meta m ON m.wt_program_id=p.id WHERE p.program_id=? AND p.is_template=1 AND m.template_key='game-week'`, user.program_id);
     const start = body.start_date || mondayOf(today());
     const name = `Game week: ${teamName(Number(body.team_id))}, week of ${start}`;
@@ -650,6 +685,7 @@ export default function strength(ctx) {
       try {
         if (MEASURES[e.test_key]) {
           need(playerIn(user, Number(e.player_id)) && Number(e.value) > 0, 400, 'Player and value are required');
+          need(wt.managesPlayer(user, Number(e.player_id)), 403, 'You can only record tests for athletes in your own groups');
           const v = Number(e.value);
           need(e.test_key === 'height' ? v >= 48 && v <= 90 : v > 50 && v < 500, 400, e.test_key === 'height' ? 'Height is in inches' : 'Weight is in pounds');
           return { player_id: Number(e.player_id), test_key: e.test_key, id: db.insert('measurements', { player_id: Number(e.player_id), kind: e.test_key, value: v, date, by_user: user.id, season_id: core.currentSeason(user.program_id)?.id }) };
@@ -669,16 +705,19 @@ export default function strength(ctx) {
     staffOnly(user);
     const roster = programPlayers(user.program_id, { teamId: query.team_id, group: query.group || null });
     const keys = Object.keys(TESTS);
-    const seeBody = isAdmin(user) || can(user, 'body.view') || can(user, 'ratings.view');
+    // F-8: height for coaches and trainers; body weight only with body-data access (body-privacy.js).
+    const seeH = isAdmin(user) || ['coach', 'trainer'].includes(user.role) || can(user, 'body.view');
+    const seeW = can(user, 'body.view');
+    const shown = Object.keys(MEASURES).filter((k) => (k === 'weight' ? seeW : seeH));
     return {
-      tests: TESTS, measures: seeBody ? MEASURES : {},
+      tests: TESTS, measures: Object.fromEntries(shown.map((k) => [k, MEASURES[k]])),
       rows: roster.map((p) => {
         const res = {};
         for (const k of keys) {
           const last = db.get('SELECT t.value, t.date, d.weight, d.reps FROM tests t LEFT JOIN test_details d ON d.test_id=t.id WHERE t.player_id=? AND t.test_key=? ORDER BY t.date DESC, t.id DESC LIMIT 1', p.id, k);
           if (last) res[k] = { ...last, best: bestOf(p.id, k) };
         }
-        if (seeBody) for (const k of Object.keys(MEASURES)) { const m = db.get('SELECT value, date FROM measurements WHERE player_id=? AND kind=? ORDER BY date DESC, id DESC LIMIT 1', p.id, k); if (m) res[k] = m; }
+        for (const k of shown) { const m = db.get('SELECT value, date FROM measurements WHERE player_id=? AND kind=? ORDER BY date DESC, id DESC LIMIT 1', p.id, k); if (m) res[k] = m; }
         return { ...playerCard(p), results: res };
       }),
     };

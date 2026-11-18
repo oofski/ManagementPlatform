@@ -117,9 +117,11 @@ test('height/weight and contact details are hidden from players viewing others',
   assert.equal(o.body.measurements, undefined);
   const self = await player.get(`/api/players/${player.id}`);
   assert.equal(typeof self.body.height, 'number');
-  assert.ok(self.body.measurements.length >= 2);
+  // F-8: the athlete sees their height; body weight only once the head coach opens it to families.
+  assert.equal(self.body.weight, undefined);
+  assert.ok(self.body.measurements.length >= 1 && self.body.measurements.every((m) => m.kind === 'height'));
   const kid = await parent.get(`/api/players/${player.id}`);
-  assert.equal(typeof kid.body.weight, 'number');
+  assert.equal(kid.body.weight, undefined);
   const pOther = await parent.get(`/api/players/${other.id}`);
   assert.equal(pOther.body.weight, undefined);
   // volunteer staff see the roster but not body measurements or emails
@@ -262,4 +264,71 @@ test('nutrition opt-out by an admin is limited to their own program', async () =
   const other = addOtherProgram(t);
   assert.equal((await head.post(`/api/players/${other.player}/opt-out`, { opt_out: true })).status, 403);
   assert.equal(t.db.get('SELECT nutrition_opt_out FROM player_profiles WHERE user_id=?', other.player).nutrition_opt_out, 0);
+});
+
+test('F-8 body weight follows one rule: body-data staff, and families only when the head coach allows it', async () => {
+  const qbc = await t.as('QB coach');
+  const sc = await t.as('Strength and conditioning');
+  const other = t.varsity('u.id!=?', player.id)[0];
+  // a coach without body-data access sees height but never weight (profile, roster list, depth chart cards)
+  const q = await qbc.get(`/api/players/${other.id}`);
+  assert.equal(typeof q.body.height, 'number');
+  assert.equal(q.body.weight, undefined);
+  assert.ok(q.body.measurements.every((m) => m.kind === 'height'));
+  assert.ok((await qbc.get('/api/players')).body.every((p) => p.weight === undefined));
+  const chart = t.db.get(`SELECT id FROM depth_charts WHERE team_id=? AND unit='offense' ORDER BY id LIMIT 1`, V).id;
+  const qc = await qbc.get(`/api/depth/${chart}`);
+  assert.ok(Object.values(qc.body.cards).every((x) => 'height' in x && x.weight === undefined));
+  // body-data staff see it everywhere
+  for (const c of [head, trainer, sc]) {
+    const r = await c.get(`/api/players/${other.id}`);
+    assert.equal(typeof r.body.weight, 'number');
+    assert.ok(r.body.measurements.some((m) => m.kind === 'weight'));
+  }
+  assert.ok(Object.values((await trainer.get(`/api/depth/${chart}`)).body.cards).some((x) => typeof x.weight === 'number'));
+  // families: only with family_sees_bodyweight (fresh sign-ins: the rollover test above signs graduates out)
+  const fresh = async (c) => t.client((await t.anon.post('/api/auth/demo', { user_id: c.id })).body.token);
+  const pl = await fresh(player);
+  const pa = await fresh(parent);
+  await t.setSettings({ family_sees_bodyweight: true });
+  const self = await pl.get(`/api/players/${player.id}`);
+  assert.equal(typeof self.body.weight, 'number');
+  assert.ok(self.body.measurements.some((m) => m.kind === 'weight'));
+  assert.equal(typeof (await pa.get(`/api/players/${player.id}`)).body.weight, 'number');
+  assert.equal((await pl.get(`/api/players/${other.id}`)).body.weight, undefined, 'never a teammate');
+  const vol = await t.as('Team manager (volunteer)');
+  assert.equal((await vol.get(`/api/players/${other.id}`)).body.weight, undefined, 'the setting is for families, not volunteers');
+  await t.setSettings({ family_sees_bodyweight: false });
+  assert.equal((await pl.get(`/api/players/${player.id}`)).body.weight, undefined);
+});
+
+test('roster import with all_or_nothing rolls back and returns 400 with the row errors', async () => {
+  const before = t.db.get(`SELECT count(*) n FROM users WHERE role='player'`).n;
+  const r = await head.post('/api/players/import', { all_or_nothing: true, rows: [{ name: 'Atomic One', team: 'Varsity', positions: 'WR' }, { name: '' }] });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.created, 0);
+  assert.deepEqual(r.body.errors.map((e) => e.row), [2]);
+  assert.ok(r.body.error);
+  assert.equal(t.db.get(`SELECT count(*) n FROM users WHERE role='player'`).n, before);
+  assert.ok(!t.db.get(`SELECT 1 FROM users WHERE name='Atomic One'`));
+});
+
+test('C-3 availability: trainers are program-wide; a coach limited to groups sets only their own players', async () => {
+  const qbc = await t.as('QB coach');
+  const qb = t.varsity(`p.positions LIKE '%"QB"%'`)[0];
+  const ol = t.varsity(`p.positions LIKE '%"OL"%'`)[0];
+  assert.equal((await qbc.put(`/api/players/${ol.id}/availability`, { availability: 'limited' })).status, 403);
+  assert.equal((await qbc.put(`/api/players/${qb.id}/availability`, { availability: 'limited' })).status, 200);
+  assert.equal((await trainer.put(`/api/players/${ol.id}/availability`, { availability: 'limited' })).status, 200);
+  const sc = await t.as('Strength and conditioning');
+  assert.equal((await sc.put(`/api/players/${ol.id}/availability`, { availability: 'full' })).status, 200, 'a coach without group limits is program-wide');
+  await trainer.put(`/api/players/${qb.id}/availability`, { availability: 'full' });
+});
+
+test('C-2 roster shows the same position group as the weight room (K/P, RB/TE)', async () => {
+  const k = t.players(`p.positions LIKE '%"K"%'`)[0];
+  const list = (await head.get('/api/players')).body;
+  assert.equal(list.find((p) => p.id === k.id).group, 'K/P');
+  const te = t.players(`p.positions = '["TE"]'`)[0];
+  if (te) assert.equal(list.find((p) => p.id === te.id).group, 'RB/TE');
 });

@@ -3,7 +3,7 @@
 import { fail, need, nowLocal, addMinutes, addDays, parseLocal, fmtLocal, today, token } from '../core.js';
 import { j, jAll } from '../db.js';
 
-export const EVENT_TYPES = ['game', 'practice', 'lift', 'film', 'meeting', 'social', 'other'];
+export const EVENT_TYPES = ['game', 'practice', 'lift', 'film', 'meeting', 'social', 'camp', 'other'];
 export const RSVP_REASONS = ['sick', 'injured', 'family', 'academic', 'transportation', 'other'];
 const TYPE_FIELDS = {
   game: ['opponent', 'home_away', 'kickoff', 'bus_departure', 'report_time', 'uniform'],
@@ -12,6 +12,8 @@ const TYPE_FIELDS = {
   social: ['head_count', 'cost'],
   film: ['what_to_bring'],
   meeting: ['agenda'],
+  // F-4: summer and position camps.
+  camp: ['location_details', 'what_to_bring', 'cost'],
   other: [],
 };
 

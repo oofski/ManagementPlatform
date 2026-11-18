@@ -79,7 +79,7 @@ export async function profileExtras(el, ctx, p) {
   playerAttendanceCard(add('att'), p.id).catch(() => {});
   // F-12 return-to-play stage (coaches see the stage, not the medical notes)
   const cBox = add('rtp');
-  api.get(`/api/fb/concussions?player_id=${p.id}&status=active`).then((list) => {
+  if (!(ctx.me.user.role === 'staff' && !me.eligibility_view)) api.get(`/api/fb/concussions?player_id=${p.id}&status=active`).then((list) => {
     const c = list[0]; if (!c) return;
     set(cBox, html`<div class="card"><div class="hd"><h2>Return to play</h2><span class="r"><span class="badge bad">Out</span></span></div><div class="bd">
       <p><b>Stage ${c.stage} of ${c.stages}:</b> ${c.stage_label}</p>${bar6(c.stage, c.stages)}
@@ -104,7 +104,7 @@ export async function profileExtras(el, ctx, p) {
     set(emBox, html`<div class="card"><div class="hd"><h2>Emergency contact</h2><span class="r faint" style="font-size:12px">signed ${ago(s.signed_at)}</span></div><div class="bd"><dl class="kv">
       <dt>Contact</dt><dd>${s.data.contact_name || '—'} ${s.data.relation ? html`<span class="muted">(${s.data.relation})</span>` : ''}</dd><dt>Phone</dt><dd>${s.data.contact_phone || '—'}</dd>
       ${s.data.contact2_name ? html`<dt>Second contact</dt><dd>${s.data.contact2_name} ${s.data.contact2_phone || ''}</dd>` : ''}
-      ${s.data.allergies ? html`<dt>Allergies</dt><dd>${s.data.allergies}</dd>` : ''}${s.data.medications ? html`<dt>Medications</dt><dd>${s.data.medications}</dd>` : ''}</dl></div></div>`);
+      ${s.data.allergies ? html`<dt>Allergies</dt><dd>${s.data.allergies}</dd>` : ''}${s.data.medications ? html`<dt>Medications</dt><dd>${s.data.medications}</dd>` : ''}</dl>${s.medical_hidden ? html`<p class="s muted">Medical details are visible to coaches and the athletic trainer.</p>` : ''}</div></div>`);
   }).catch(() => {});
   // C-24 season history
   const hBox = add('hist');

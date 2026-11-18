@@ -124,7 +124,7 @@ async function family(el, ctx) {
   if (!pid) { set(el, empty('No linked player.')); return; }
   const [workouts, meals, logs, tests, prof, bw, sum, m] = await Promise.all([
     parent ? Promise.resolve([]) : api.get(`/api/workouts/player/${pid}`), api.get('/api/meal-plans'), api.get(`/api/meal-logs?player_id=${pid}`),
-    api.get(`/api/tests?player_id=${pid}`), api.get(`/api/players/${pid}`), api.get(`/api/bodyweight/${pid}`).catch(() => null), api.get(`/api/strength/athlete/${pid}`).catch(() => null), wr.meta(),
+    api.get(`/api/tests?player_id=${pid}`), api.get(`/api/players/${pid}`), ctx.me.settings?.family_sees_bodyweight ? api.get(`/api/bodyweight/${pid}`).catch(() => null) : Promise.resolve(null), api.get(`/api/strength/athlete/${pid}`).catch(() => null), wr.meta(),
   ]);
   const optOut = !!prof.nutrition_opt_out;
   const done = new Set(logs.meals.filter((x) => x.done).map((x) => `${x.plan_id}:${x.meal_idx}`));
@@ -174,7 +174,11 @@ async function leaderboardModal(m, key = 'squat', scope = 'team') {
 
 async function workout(el, ctx) {
   const { a, w, d } = ctx.params;
-  const pid = ctx.me.user.role === 'player' ? ctx.me.user.id : Number(ctx.query.player);
+  const role = ctx.me.user.role;
+  // Parents open their player's workout (read-only); staff pass ?player=.
+  const pid = role === 'player' ? ctx.me.user.id : role === 'parent' ? Number(ctx.query.player) || ctx.me.linked[0]?.id || 0 : Number(ctx.query.player) || 0;
+  if (!pid) { set(el, html`<div class="page-head"><div><h1>Workout</h1></div><div class="actions"><a class="btn" href="/weights">Back</a></div></div>${empty(role === 'parent' ? 'No linked player for this workout.' : 'Open this workout from an athlete in the weight room.')}`); return; }
+  const readOnly = role === 'parent';
   const wk = await api.get(`/api/workouts/player/${pid}/${a}/${w}/${d}`);
   ctx.setTitle(`Week ${w} · Day ${d}`);
   const limited = wk.availability && wk.availability !== 'available';
@@ -187,7 +191,7 @@ async function workout(el, ctx) {
         <div class="wr-sets">${Array.from({ length: x.sets }, (_, i) => { const l = x.logged.find((y) => y.set_no === i + 1); return html`<div class="wr-set ${l ? 'done' : ''}" data-set="${i + 1}"><span class="wr-setno">Set ${i + 1}</span>
           <label class="wr-fld"><span>Reps</span><span class="wr-step"><button type="button" class="icon" data-st="reps:-1" aria-label="Fewer reps">−</button><input type="number" inputmode="numeric" data-k="reps" value="${l?.reps ?? (String(x.reps).match(/^\d+$/) ? x.reps : '')}"><button type="button" class="icon" data-st="reps:1" aria-label="More reps">+</button></span></label>
           <label class="wr-fld"><span>Weight (lb)</span><span class="wr-step"><button type="button" class="icon" data-st="weight:-5" aria-label="Five pounds less">−</button><input type="number" inputmode="decimal" step="2.5" data-k="weight" value="${l?.weight ?? x.load ?? ''}"><button type="button" class="icon" data-st="weight:5" aria-label="Five pounds more">+</button></span></label>
-          <button class="${l ? '' : 'primary'} wr-log" data-log>${l ? 'Logged' : 'Log set'}</button></div>`; })}</div>
+          ${readOnly ? html`<span class="s muted">${l ? 'Logged' : 'Not logged'}</span>` : html`<button class="${l ? '' : 'primary'} wr-log" data-log>${l ? 'Logged' : 'Log set'}</button>`}</div>`; })}</div>
       </div></div>`)}</div>`);
   let logged = wk.logged_sets;
   on(el, 'click', '[data-st]', (e, b) => { const [k, dv] = b.dataset.st.split(':'); const inp = b.closest('.wr-set').querySelector(`[data-k=${k}]`); inp.value = Math.max(0, (Number(inp.value) || 0) + Number(dv)); });
@@ -198,7 +202,8 @@ async function workout(el, ctx) {
       const r = await api.post('/api/wt-logs', body2, { offline: true });
       if (!row.classList.contains('done')) { logged++; $('#cnt', el).textContent = `${logged}/${wk.prescribed_sets}`; }
       row.classList.add('done'); b.textContent = r.queued ? 'Saved offline' : 'Logged'; b.classList.remove('primary');
-      if (r.training_max) toast(r.training_max.pr ? `New PR: estimated ${r.training_max.value} lb` : `Training max is now ${r.training_max.value} lb`);
+      if (r.review) toast('Saved. This set is well above your max, so a coach will review it before your training max changes.', 'warn');
+      else if (r.training_max) toast(r.training_max.pr ? `New PR: estimated ${r.training_max.value} lb` : `Training max is now ${r.training_max.value} lb`);
     } catch (err) { errToast(err); }
   });
 }

@@ -35,11 +35,11 @@ async function profile(el, ctx, id) {
         <div class="grow"><h1 style="font-size:22px">${p.name}${p.jersey != null ? html` <span class="muted">#${p.jersey}</span>` : ''}</h1>
           <div>${[p.positions.join(' / '), p.class_year ? `Class of ${p.class_year}` : null, r.program?.school].filter(Boolean).join(' · ')}</div>
           <div class="muted">${[r.program?.name, p.team].filter(Boolean).join(' · ')}</div></div>
-        <dl class="kv" style="min-width:180px"><dt>Height</dt><dd>${ht}</dd><dt>Weight</dt><dd>${p.weight ? `${p.weight} lb` : '—'}</dd><dt>GPA</dt><dd>${r.gpa ?? '—'}</dd></dl></div>
+        <dl class="kv" style="min-width:180px"><dt>Height</dt><dd>${ht}</dd>${p.weight ? html`<dt>Weight</dt><dd>${p.weight} lb</dd>` : ''}<dt>GPA</dt><dd>${r.gpa ?? '—'}</dd></dl></div>
       ${r.bio ? html`<p>${r.bio}</p>` : ''}
       <div class="grid g2">
         <div><h4 style="margin-bottom:6px">Verified testing</h4>${r.tests.length ? html`<table><tbody>${r.tests.map((t) => html`<tr><td>${t.label}</td><td class="num"><b>${t.value}</b> ${t.unit}</td><td class="s">${fmtDate(t.date, { year: true, dow: false })}${t.verified ? html` · verified by ${t.by_name}` : ''}</td></tr>`)}</tbody></table>` : html`<p class="muted">No tests recorded.</p>`}</div>
-        <div><h4 style="margin-bottom:6px">Lifting PRs (logged)</h4>${r.lifts.length ? html`<table><tbody>${r.lifts.map((l) => html`<tr><td>${l.name}</td><td class="num"><b>${l.weight}</b> lb</td></tr>`)}</tbody></table>` : html`<p class="muted">No logged lifts.</p>`}</div>
+        <div><h4 style="margin-bottom:6px">Lifting maxes (coach-recorded)</h4>${r.lifts.length ? html`<table><tbody>${r.lifts.map((l) => html`<tr><td>${l.name}</td><td class="num"><b>${l.weight}</b> lb</td></tr>`)}</tbody></table>` : html`<p class="muted">No coach-recorded maxes.</p>`}</div>
       </div>
       <div class="grid g2" style="margin-top:12px">
         <div><h4 style="margin-bottom:6px">Film</h4>${r.film_url ? html`<a href="${r.film_url}" target="_blank" rel="noopener">${r.film_url}</a>` : html`<span class="muted">—</span>`}</div>

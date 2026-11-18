@@ -481,3 +481,71 @@ test('F-8 body weight trend is coach-only by default and never on leaderboards',
   assert.equal(meta.body.settings.family_sees_bodyweight, false);
   assert.equal(meta.body.can_edit, false);
 });
+
+test('C-15/F-18 an athlete set far above the max is kept but held for review; coaches and approvals apply it', async () => {
+  const pid = player.id;
+  const cur = () => Math.max(t.db.get(`SELECT max(value) v FROM tests WHERE player_id=? AND test_key='squat'`, pid).v || 0, t.db.get(`SELECT max(value) v FROM training_maxes WHERE player_id=? AND test_key='squat'`, pid).v || 0);
+  const before = cur();
+  const tms = t.db.get('SELECT count(*) n FROM training_maxes WHERE player_id=?', pid).n;
+  const feed = t.db.get(`SELECT count(*) n FROM wt_feed WHERE player_id=?`, pid).n;
+  const weight = Math.ceil((before * 1.3) / (1 + 5 / 30) / 5) * 5; // ~30% above the max
+  const r = await player.post('/api/wt-logs', { exercise_id: ex('Back squat'), set_no: 1, reps: 5, weight, date: today(), client_id: 'sanity-1' });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.training_max, undefined);
+  assert.equal(r.body.review, 'pending');
+  assert.equal(t.db.get('SELECT review FROM wt_logs WHERE id=?', r.body.id).review, 'pending', 'the log is kept and flagged');
+  assert.equal(t.db.get('SELECT count(*) n FROM training_maxes WHERE player_id=?', pid).n, tms);
+  assert.equal(cur(), before);
+  assert.equal(t.db.get(`SELECT count(*) n FROM wt_feed WHERE player_id=?`, pid).n, feed, 'no PR or club post');
+  assert.equal(t.notifications(head.id, `${player.user.name}: logged set needs review`).length, 1);
+  assert.equal(t.notifications(sc.id, `${player.user.name}: logged set needs review`).length, 1, 'the strength coach reviews too');
+  // a coach reviews it: the review list, then approval applies it as a coach entry
+  assert.equal((await player.get('/api/strength/log-reviews')).status, 403);
+  const list = await sc.get('/api/strength/log-reviews');
+  assert.ok(list.body.some((l) => l.id === r.body.id));
+  assert.equal((await qbc.post(`/api/strength/log-reviews/${r.body.id}`, { approve: true })).status, 200, 'the QB coach manages this QB');
+  assert.equal(cur(), Math.round(weight * (1 + 5 / 30)));
+  assert.equal((await sc.post(`/api/strength/log-reviews/${r.body.id}`, {})).status, 404, 'reviewed once');
+  // a coach logging for the athlete is trusted
+  const big = Math.ceil((cur() * 1.3) / (1 + 5 / 30) / 5) * 5;
+  const c = await sc.post('/api/wt-logs', { player_id: pid, exercise_id: ex('Back squat'), set_no: 2, reps: 5, weight: big, date: today(), client_id: 'sanity-2' });
+  assert.equal(c.body.training_max.value, Math.round(big * (1 + 5 / 30)));
+});
+
+test('C-3 weight room editor actions respect a coach\'s group limits; trainers and unscoped coaches are program-wide', async () => {
+  const tpls = (await sc.get('/api/strength/templates')).body;
+  const ol = tpls.find((x) => x.template_key === 'pos-ol');
+  assert.equal((await qbc.post('/api/strength/assign-group', { wt_program_id: ol.id, group: 'OL' })).status, 403);
+  assert.equal((await qbc.post('/api/strength/assign-group', { wt_program_id: ol.id, group: 'QB' })).status, 200);
+  assert.equal((await qbc.post('/api/strength/assign-group', { wt_program_id: ol.id, group: 'QB', team_id: t.teams.Varsity })).status, 200);
+  assert.equal((await trainer.post('/api/strength/assign-group', { wt_program_id: ol.id, group: 'OL' })).status, 200);
+  // group layer
+  assert.equal((await qbc.post(`/api/strength/assignments/${asnId}/group-overrides`, { group_token: 'pg:OL', note: 'x' })).status, 403);
+  assert.equal((await qbc.post(`/api/strength/assignments/${asnId}/group-overrides`, { group_token: `team:${t.teams.Varsity}`, note: 'x' })).status, 403);
+  const mine = await qbc.post(`/api/strength/assignments/${asnId}/group-overrides`, { group_token: 'pg:QB', note: 'QB note' });
+  assert.equal(mine.status, 200);
+  const olg = await sc.post(`/api/strength/assignments/${asnId}/group-overrides`, { group_token: 'pos:OL', note: 'OL note' });
+  assert.equal((await qbc.del(`/api/strength/group-overrides/${olg.body.id}`)).status, 403);
+  assert.equal((await qbc.del(`/api/strength/group-overrides/${mine.body.id}`)).status, 200);
+  // game-week assignment to a team
+  assert.equal((await qbc.post('/api/strength/game-week', { team_id: t.teams.Varsity })).status, 403);
+  // testing day: tests and measurements only for their athletes
+  const olp = t.varsity("p.positions LIKE '%\"OL\"%'")[0].id;
+  const td = await qbc.post('/api/strength/testing-day', { entries: [{ player_id: olp, test_key: 'forty', value: 5.1 }, { player_id: olp, test_key: 'height', value: 74 }, { player_id: player.id, test_key: 'forty', value: 4.8 }] });
+  assert.equal(td.body.saved, 1);
+  assert.ok(td.body.results.filter((x) => x.player_id === olp).every((x) => x.error));
+});
+
+test('F-8 testing battery shows body weight only with body-data access; /api/me exposes the family setting', async () => {
+  const q = await qbc.get(`/api/strength/battery?team_id=${t.teams.Varsity}`);
+  assert.ok(q.body.measures.height && !q.body.measures.weight);
+  assert.ok(q.body.rows.every((r) => r.results.weight === undefined));
+  assert.ok(q.body.rows.some((r) => r.results.height));
+  const s = await sc.get(`/api/strength/battery?team_id=${t.teams.Varsity}`);
+  assert.ok(s.body.measures.weight && s.body.rows.some((r) => r.results.weight));
+  assert.ok((await trainer.get(`/api/strength/battery?team_id=${t.teams.Varsity}`)).body.measures.weight);
+  assert.equal((await player.get('/api/me')).body.settings.family_sees_bodyweight, false);
+  await t.setSettings({ family_sees_bodyweight: true });
+  assert.equal((await parent.get('/api/me')).body.settings.family_sees_bodyweight, true);
+  await t.setSettings({ family_sees_bodyweight: false });
+});

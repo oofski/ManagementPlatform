@@ -5,6 +5,7 @@ import { fail, need, nowLocal, addDays, parseLocal, fmtLocal, today } from '../c
 import { j, jAll } from '../db.js';
 import { csv, csvResponse } from '../app.js';
 import { ensureLibrary, groupOf, athleteGroup } from '../strength-data.js';
+import { seesBodyWeight } from '../body-privacy.js';
 
 // F-6 football testing battery. Strength tests accept a rep test (weight x reps -> estimated 1RM by Epley).
 // Height and weight are part of the battery but are stored as measurements (coach-only) and never ranked.
@@ -29,6 +30,11 @@ export default function weights(ctx) {
   const editor = (u) => need(can(u, 'weights.edit'), 403, 'Coaches and trainers only');
   const playerIn = (u, id) => !!db.get(`SELECT 1 FROM users WHERE id=? AND program_id=? AND role='player'`, id, u.program_id);
   const selfOrStaff = (u, id) => (isStaff(u) && playerIn(u, id)) || core.linkedPlayers(u).includes(id);
+  // C-3: a coach limited to groups (staff_scopes) acts only on athletes and groups they manage. Admins, trainers and
+  // coaches without scopes (e.g. the strength coach) stay program-wide.
+  const programWide = (u) => isAdmin(u) || u.role === 'trainer' || !core.staffScopes(u.id).length;
+  const managesPlayer = (u, pid) => programWide(u) || core.managesAudience(u, [`player:${Number(pid)}`]);
+  const managesTokens = (u, toks) => programWide(u) || (toks.length > 0 && core.managesAudience(u, toks));
 
   router.get('/api/weights/meta', () => ({ tests: TESTS, measures: MEASURES }));
 
@@ -142,6 +148,7 @@ export default function weights(ctx) {
     const p = progOf(user.program_id, Number(body.wt_program_id));
     need(p, 404, 'Program not found');
     need(Array.isArray(body.audience) && body.audience.length, 400, 'Pick who this is for');
+    need(managesTokens(user, body.audience), 403, 'You can only assign programs to your own groups');
     const start = body.start_date || today();
     const id = db.insert('wt_assignments', { program_id: user.program_id, wt_program_id: p.id, audience: body.audience, start_date: start, season_id: core.currentSeason(user.program_id)?.id, created_by: user.id });
     const events = [];
@@ -181,6 +188,7 @@ export default function weights(ctx) {
     editor(user);
     const a = db.get('SELECT * FROM wt_assignments WHERE id=? AND program_id=?', Number(params.id), user.program_id);
     need(a && playerIn(user, Number(body.player_id)), 404, 'Assignment or player not found');
+    need(managesPlayer(user, Number(body.player_id)), 403, 'You can only change workouts for athletes in your own groups');
     db.run('DELETE FROM wt_overrides WHERE assignment_id=? AND player_id=? AND coalesce(exercise_id,0)=coalesce(?,0)', a.id, Number(body.player_id), body.exercise_id || null);
     const id = db.insert('wt_overrides', { assignment_id: a.id, player_id: Number(body.player_id), exercise_id: body.exercise_id || null, alt_exercise_id: body.alt_exercise_id || null, sets: body.sets || null, reps: body.reps || null, pct: body.pct || null, note: body.note || null });
     audit(user, 'wt_override', 'player', Number(body.player_id), { assignment: a.id });
@@ -188,8 +196,9 @@ export default function weights(ctx) {
   });
   router.del('/api/wt-overrides/:id', ({ user, params }) => {
     editor(user);
-    const o = db.get('SELECT o.id FROM wt_overrides o JOIN wt_assignments a ON a.id=o.assignment_id WHERE o.id=? AND a.program_id=?', Number(params.id), user.program_id);
+    const o = db.get('SELECT o.id, o.player_id FROM wt_overrides o JOIN wt_assignments a ON a.id=o.assignment_id WHERE o.id=? AND a.program_id=?', Number(params.id), user.program_id);
     need(o, 404, 'Override not found');
+    need(managesPlayer(user, o.player_id), 403, 'You can only change workouts for athletes in your own groups');
     db.run('DELETE FROM wt_overrides WHERE id=?', o.id);
     return { ok: true };
   });
@@ -266,7 +275,7 @@ export default function weights(ctx) {
     const t = today();
     return (sorted.find((x) => dueDate(a, x.d) === t) || sorted.find((x) => !x.r.complete && dueDate(a, x.d) >= t))?.i ?? -1;
   }
-  ctx.wt = { maxInfo, maxFor, resolveDay, assignmentsFor, dueDate, nextDayIndex, profileOf, tokenMatches, tokenLabel, metaOf, saveMeta, validDays, progOf, playerIn, saveTest: (u, b) => saveTest(u, b), TESTS };
+  ctx.wt = { maxInfo, maxFor, resolveDay, assignmentsFor, dueDate, nextDayIndex, profileOf, tokenMatches, tokenLabel, metaOf, saveMeta, validDays, progOf, playerIn, saveTest: (u, b) => saveTest(u, b), TESTS, managesPlayer, managesTokens, programWide };
 
   router.get('/api/workouts/player/:id', ({ user, params }) => {
     const id = Number(params.id);
@@ -291,8 +300,14 @@ export default function weights(ctx) {
   function saveLog(user, b) {
     const pid = Number(b.player_id || user.id);
     need(pid === user.id || (can(user, 'weights.edit') && playerIn(user, pid)), 403, 'You can only log your own work');
+    need(pid === user.id || managesPlayer(user, pid), 403, 'You can only log sets for athletes in your own groups');
     if (b.client_id) { const dup = db.get('SELECT id FROM wt_logs WHERE client_id=?', b.client_id); if (dup) return { id: dup.id, duplicate: true }; }
     need(b.exercise_id && Number(b.set_no) > 0, 400, 'Exercise and set are required');
+    // C-15/F-18 sanity limits on what a set can record.
+    const w0 = b.weight === undefined || b.weight === null || b.weight === '' ? 0 : Number(b.weight);
+    const r0 = b.reps === undefined || b.reps === null || b.reps === '' ? 0 : Number(b.reps);
+    need(Number.isFinite(w0) && w0 >= 0 && w0 <= 1000, 400, 'Weight must be between 0 and 1000 lb');
+    need(Number.isFinite(r0) && r0 >= 0 && r0 <= 100, 400, 'Reps must be between 0 and 100');
     const existing = db.get('SELECT id FROM wt_logs WHERE player_id=? AND assignment_id IS ? AND week IS ? AND day IS ? AND exercise_id=? AND set_no=?', pid, b.assignment_id || null, b.week || null, b.day || null, Number(b.exercise_id), Number(b.set_no));
     if (b.assignment_id) need(db.get('SELECT 1 FROM wt_assignments WHERE id=? AND program_id=?', Number(b.assignment_id), user.program_id), 404, 'Workout not found');
     const row = { reps: Number(b.reps) || 0, weight: Number(b.weight) || 0, date: b.date || today(), exercise_id: Number(b.exercise_id) };
@@ -301,14 +316,15 @@ export default function weights(ctx) {
     else out = { id: db.insert('wt_logs', { player_id: pid, assignment_id: b.assignment_id || null, week: b.week || null, day: b.day || null, exercise_id: row.exercise_id, set_no: Number(b.set_no), reps: row.reps, weight: row.weight, date: row.date, client_id: b.client_id || null }) };
     // C-15: update the training max from this set's estimated 1RM
     const tm = ctx.strength?.afterLog(user, pid, { ...row, log_id: out.id });
-    if (tm) out.training_max = tm;
+    if (tm?.review) out.review = tm.review;
+    else if (tm) out.training_max = tm;
     return out;
   }
   router.post('/api/wt-logs', ({ user, body }) => saveLog(user, body));
   router.post('/api/wt-logs/batch', ({ user, body }) => ({ results: (body.items || []).map((i) => { try { return saveLog(user, i); } catch (e) { return { error: e.message }; } }) }));
   router.del('/api/wt-logs/:id', ({ user, params }) => {
     const l = db.get('SELECT * FROM wt_logs WHERE id=?', Number(params.id));
-    need(l && (l.player_id === user.id || (can(user, 'weights.edit') && playerIn(user, l.player_id))), 403, 'No access');
+    need(l && (l.player_id === user.id || (can(user, 'weights.edit') && playerIn(user, l.player_id) && managesPlayer(user, l.player_id))), 403, 'No access');
     db.run('DELETE FROM wt_logs WHERE id=?', l.id);
     return { ok: true };
   });
@@ -334,6 +350,7 @@ export default function weights(ctx) {
     if (repTest) { need(Number(b.reps) <= 12, 400, 'Rep tests are estimated up to 12 reps'); b = { ...b, value: epley(b.weight, b.reps) }; }
     need(playerIn(user, Number(b.player_id)) && Number(b.value) > 0, 400, 'Player and value are required');
     const pid = Number(b.player_id);
+    need(managesPlayer(user, pid), 403, 'You can only record tests for athletes in your own groups');
     const prev = db.get(`SELECT ${t.better === 'lower' ? 'min' : 'max'}(value) v FROM tests WHERE player_id=? AND test_key=?`, pid, b.test_key).v;
     const date = b.date || today();
     const id = db.insert('tests', { player_id: pid, test_key: b.test_key, value: Number(b.value), date, by_user: user.id, season_id: core.currentSeason(user.program_id)?.id });
@@ -431,9 +448,8 @@ export default function weights(ctx) {
   });
 
   // ---------- body weight (WGT-9, F-8) — coaches with body-data access only, unless the head coach opens it to families ----------
-  const familySees = (u) => !!core.settings(u.program_id).family_sees_bodyweight;
   const staffSeesBody = (u, pid) => (isAdmin(u) || can(u, 'body.view')) && playerIn(u, pid);
-  const canSeeBody = (u, pid) => staffSeesBody(u, pid) || (familySees(u) && core.linkedPlayers(u).includes(pid));
+  const canSeeBody = (u, pid) => seesBodyWeight(core, u, pid);
   router.get('/api/bodyweight/:playerId', ({ user, params }) => {
     const pid = Number(params.playerId);
     need(canSeeBody(user, pid), 403, 'Body weight is private to coaches who have been granted access');

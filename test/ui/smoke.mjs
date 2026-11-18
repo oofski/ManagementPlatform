@@ -58,7 +58,7 @@ const expectedDenied = {
 staffPages.push('/eligibility', '/forms', '/safety', '/safety?tab=heat', '/safety?tab=concussion', '/messages/documents', '/messages/digest', '/recruiting', `/recruiting/${player}`);
 familyPages.push('/forms', '/messages/documents', `/recruiting/${player}`, '/join');
 expectedDenied.ad.push('/messages/digest');
-const roles = [['head_coach', head, staffPages], ['coach', coach, staffPages], ['trainer', trainer, staffPages.filter((p) => !p.startsWith('/playbook'))], ['ad', ad, staffPages.filter((p) => !p.startsWith('/playbook'))], ['player', player, familyPages], ['parent', parent, familyPages]];
+const roles = [['head_coach', head, staffPages], ['coach', coach, staffPages], ['trainer', trainer, staffPages.filter((p) => !p.startsWith('/playbook') || p === '/playbook/game')], ['ad', ad, staffPages.filter((p) => !p.startsWith('/playbook'))], ['player', player, familyPages], ['parent', parent, familyPages]];
 
 const browser = await chromium.launch();
 const failures = [];
@@ -71,7 +71,13 @@ for (const [role, uid, pages] of roles) {
   let errs = [];
   page.on('pageerror', (e) => errs.push(`pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource.*(403|404)|cdnjs|ERR_|net::/.test(m.text())) errs.push(`console: ${m.text()}`); });
-  page.on('response', (res) => { if (res.status() >= 500) errs.push(`HTTP ${res.status()} ${res.url()}`); });
+  page.on('response', (res) => {
+    if (res.status() >= 500) errs.push(`HTTP ${res.status()} ${res.url()}`);
+    const u = new URL(res.url());
+    // Requests the page should never make: ids that failed to parse, and predictable 403s (F-8 body weight, playbook positions).
+    if (u.pathname.startsWith('/api/') && /\/(NaN|undefined|null)(\/|$)/.test(u.pathname)) errs.push(`bad request path ${u.pathname}`);
+    if (res.status() === 403 && ((['player', 'parent'].includes(role) && u.pathname.startsWith('/api/bodyweight/')) || u.pathname === '/api/pb/positions')) errs.push(`predictable 403 ${u.pathname}`);
+  });
   for (const p of pages) {
     errs = [];
     await page.goto(base + p, { waitUntil: 'networkidle' }).catch((e) => errs.push(`goto: ${e.message}`));

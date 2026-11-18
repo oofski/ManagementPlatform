@@ -7,6 +7,8 @@ import { fail, need, nowLocal, today, addDays, addMinutes, hashPassword, checkPa
 import { j, jAll } from '../db.js';
 import * as weights from './weights.js';
 import { schoolYearEnd } from './fb-roster.js';
+import { athleteGroup } from '../strength-data.js';
+import { seesBodyWeight } from '../body-privacy.js';
 
 export const CONCUSSION_STAGES = [
   { stage: 1, label: 'Symptom-limited activity', detail: 'Daily activities that do not provoke symptoms; no exercise.' },
@@ -27,6 +29,8 @@ const DOC_TYPES = {
   'text/plain': 'Text', 'text/csv': 'Spreadsheet',
 };
 const MAX_DOC_BYTES = 5 * 1024 * 1024;
+// Emergency-form fields that are medical information (F-14); everything else on the form is a contact.
+const MEDICAL_KEYS = ['allergies', 'medications', 'conditions', 'medical_notes', 'notes', 'medical'];
 
 export const mondayOf = (d) => { const x = parseLocal(d.slice(0, 10) + 'T00:00'); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return fmtLocal(x).slice(0, 10); };
 const daysBetween = (a, b) => Math.round((parseLocal(b + 'T12:00') - parseLocal(a + 'T12:00')) / 86400000);
@@ -50,7 +54,7 @@ export function archiveSeason(db, core, user, { graduating_class = 0, new_season
     for (const r of db.all('SELECT test_key, value, date FROM tests WHERE player_id=? ORDER BY date', p.id)) {
       if (!prs[r.test_key] || isBetter(r.test_key, r.value, prs[r.test_key].value)) prs[r.test_key] = { value: r.value, date: r.date };
     }
-    for (const r of db.all(`SELECT e.name, max(l.weight) w FROM wt_logs l JOIN exercises e ON e.id=l.exercise_id WHERE l.player_id=? AND l.weight>0 GROUP BY e.id`, p.id)) {
+    for (const r of db.all(`SELECT e.name, max(l.weight) w FROM wt_logs l JOIN exercises e ON e.id=l.exercise_id WHERE l.player_id=? AND l.weight>0 AND coalesce(l.review,'')!='pending' GROUP BY e.id`, p.id)) {
       prs[`lift:${r.name}`] = { value: r.w, label: r.name };
     }
     const a = db.get(`SELECT count(*) n, sum(a.status IN ('present','late','left_early')) here FROM attendance a JOIN events e ON e.id=a.event_id
@@ -291,7 +295,7 @@ export default function football(ctx) {
     const to = query.to || today();
     const rows = attendanceRecords(user.program_id, from, to, query.type || null);
     const info = Object.fromEntries(jAll(db.all(`SELECT u.id, u.name, p.jersey, p.team_id, p.positions, p.primary_group FROM users u JOIN player_profiles p ON p.user_id=u.id
-      WHERE u.program_id=? AND u.role='player' AND u.active=1 AND p.archived=0`, user.program_id), 'positions').map((p) => [p.id, { ...p, group: p.primary_group || p.positions[0] || 'None' }]));
+      WHERE u.program_id=? AND u.role='player' AND u.active=1 AND p.archived=0`, user.program_id), 'positions').map((p) => [p.id, { ...p, group: athleteGroup(p.primary_group, p.positions) || p.primary_group || p.positions[0] || 'None' }]));
     const by = {};
     for (const r of rows) if (info[r.player_id]) (by[r.player_id] ||= []).push(r);
     let players = Object.entries(by).map(([pid, list]) => { const p = info[pid]; return { player_id: Number(pid), name: p.name, jersey: p.jersey, team_id: p.team_id, group: p.group, ...summarize(list) }; });
@@ -504,6 +508,8 @@ export default function football(ctx) {
   };
   const caseOf = (u, id) => db.get('SELECT c.*, u.name player, p.jersey FROM fb_concussions c JOIN users u ON u.id=c.player_id JOIN player_profiles p ON p.user_id=c.player_id WHERE c.id=? AND c.program_id=?', id, u.program_id);
   router.get('/api/fb/concussions', ({ user, query }) => {
+    // Volunteers and other support staff without eligibility access do not see concussion cases.
+    need(!(user.role === 'staff' && !eligView(user)), 403, 'No access to concussion cases');
     const where = ['c.program_id=?']; const args = [user.program_id];
     if (isStaff(user)) { if (query.player_id) { where.push('c.player_id=?'); args.push(Number(query.player_id)); } } else {
       const mine = core.linkedPlayers(user);
@@ -515,6 +521,7 @@ export default function football(ctx) {
   });
   router.get('/api/fb/concussions/:id', ({ user, params }) => {
     const c = caseOf(user, Number(params.id));
+    need(!(user.role === 'staff' && !eligView(user)), 403, 'No access to concussion cases');
     need(c && (isStaff(user) || core.linkedPlayers(user).includes(c.player_id)), 404, 'Case not found');
     if (isMedical(user)) audit(user, 'view_medical', 'player', c.player_id, { case: c.id });
     return caseOut(user, c);
@@ -594,7 +601,7 @@ export default function football(ctx) {
     for (const r of db.all(`SELECT s.player_id, f.kind, max(s.signed_at) at FROM fb_signatures s JOIN fb_forms f ON f.id=s.form_id WHERE s.program_id=? GROUP BY s.player_id, f.kind`, user.program_id)) (signed[r.player_id] ||= {})[r.kind] = r.at;
     return rows.map((r) => ({
       player_id: r.id, name: r.name, jersey: r.jersey, team_id: r.team_id, team: r.team ? (r.team === r.lname ? r.team : `${r.lname} ${r.team}`) : null,
-      class_year: r.class_year, group: r.primary_group || r.positions[0] || null, availability: r.availability,
+      class_year: r.class_year, group: athleteGroup(r.primary_group, r.positions) || r.primary_group || r.positions[0] || null, availability: r.availability,
       ...eligibility(r.player_id ? r : null, s), signed: signed[r.id] || {},
     }));
   }
@@ -697,7 +704,15 @@ export default function football(ctx) {
     const id = Number(params.id);
     need((isStaff(user) && playerOf(user.program_id, id)) || core.linkedPlayers(user).includes(id), 403, 'No access');
     const s = j(db.get(`SELECT s.data, s.signed_at, s.typed_name FROM fb_signatures s JOIN fb_forms f ON f.id=s.form_id WHERE s.player_id=? AND f.kind='emergency' ORDER BY s.id DESC LIMIT 1`, id), 'data');
-    return s || null;
+    if (!s) return null;
+    // Medical details go to the medical professional and staff with eligibility access; volunteers and other staff
+    // get the emergency contacts only. The family always sees what they filed.
+    if (isStaff(user) && !isMedical(user) && !eligView(user) && s.data) {
+      for (const k of MEDICAL_KEYS) delete s.data[k];
+      s.medical_hidden = true;
+    }
+    if (isStaff(user)) audit(user, 'view_emergency', 'player', id);
+    return s;
   });
 
   // =====================================================================
@@ -786,8 +801,11 @@ export default function football(ctx) {
       if (!tests[t.test_key] || isBetter(t.test_key, t.value, tests[t.test_key].value)) tests[t.test_key] = { ...t, label: TESTS()[t.test_key]?.label || t.test_key, unit: TESTS()[t.test_key]?.unit || '', verified: !!t.by_name };
     }
     const h = db.get(`SELECT value FROM measurements WHERE player_id=? AND kind='height' ORDER BY date DESC LIMIT 1`, id)?.value ?? null;
-    const w = db.get(`SELECT value FROM measurements WHERE player_id=? AND kind='weight' ORDER BY date DESC LIMIT 1`, id)?.value ?? null;
-    const lifts = db.all(`SELECT e.name, max(l.weight) weight FROM wt_logs l JOIN exercises e ON e.id=l.exercise_id WHERE l.player_id=? AND l.weight>0 GROUP BY e.id ORDER BY weight DESC LIMIT 6`, id);
+    // F-8: body weight only for viewers the body-weight rule allows (body-data staff; families when the head coach allows).
+    const w = seesBodyWeight(core, user, id) ? db.get(`SELECT value FROM measurements WHERE player_id=? AND kind='weight' ORDER BY date DESC LIMIT 1`, id)?.value ?? null : null;
+    // C-15/F-18: lifting maxes come from coach-recorded tests only, never from an athlete's own logged sets.
+    const lifts = db.all(`SELECT test_key, max(value) weight FROM tests WHERE player_id=? AND by_user IS NOT NULL AND test_key IN (${Object.keys(TESTS()).filter((k) => TESTS()[k].rep_test).map(() => '?').join(',')}) GROUP BY test_key ORDER BY weight DESC`, id, ...Object.keys(TESTS()).filter((k) => TESTS()[k].rep_test))
+      .map((r) => ({ name: (TESTS()[r.test_key]?.label || r.test_key).replace(/ 1RM$/, ''), test_key: r.test_key, weight: r.weight }));
     const approver = r.approved_by ? db.get('SELECT name, title FROM users WHERE id=?', r.approved_by) : null;
     const program = db.get('SELECT name, school, state FROM programs WHERE id=?', user.program_id);
     const coach = db.get(`SELECT name, email, phone, title FROM users WHERE program_id=? AND role='head_coach' AND active=1 ORDER BY id LIMIT 1`, user.program_id);

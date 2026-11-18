@@ -346,3 +346,21 @@ test('calendar feed tokens are random url-safe tokens', async () => {
   assert.match(tok, /^[A-Za-z0-9_-]{20,}$/);
   assert.equal((await t.anon.get(r.body.path)).status, 200);
 });
+
+test('F-4 camp events: their own type and fields, and a seeded summer camp', async () => {
+  const meta = await player.get('/api/calendar/meta');
+  assert.ok(meta.body.types.includes('camp'));
+  assert.deepEqual(meta.body.fields.camp, ['location_details', 'what_to_bring', 'cost']);
+  const r = await head.post('/api/events', { type: 'camp', title: 'QB camp', start: future(20, '09:00'), end: future(20, '12:00'), audience: [`team:${V}`],
+    details: { location_details: 'Main field', what_to_bring: 'Cleats', cost: '$20', opponent: 'dropped' } });
+  assert.equal(r.status, 200);
+  const e = await head.get(`/api/events/${r.body.id}`);
+  assert.deepEqual(e.body.details, { location_details: 'Main field', what_to_bring: 'Cleats', cost: '$20' });
+  const seeded = t.db.get(`SELECT * FROM events WHERE type='camp' AND title LIKE '%summer%'`);
+  assert.ok(seeded, 'a summer camp is seeded');
+  assert.match(seeded.start, /-06-\d\dT/);
+  const d = today(); const end = Number(d.slice(5, 7)) >= 7 ? Number(d.slice(0, 4)) + 1 : Number(d.slice(0, 4));
+  assert.equal(seeded.start.slice(0, 4), String(end));
+  const camp = await player.get(`/api/events?from=${end}-06-01&to=${end}-06-30`);
+  assert.ok(camp.body.some((x) => x.type === 'camp'), 'players see the camp on their calendar');
+});

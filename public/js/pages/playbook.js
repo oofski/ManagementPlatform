@@ -13,6 +13,7 @@ import { openExport } from '../export.js';
 
 export default async function playbook(el, ctx) {
   const r = ctx.route;
+  canPositions = !!ctx.me.caps['playbook.view'] || ctx.me.user.role === 'player';
   if (r === '/playbook/play/:id/edit') return (await import('../playbook-designer.js')).playDesigner(el, ctx, ctx.params.id);
   if (r === '/playbook/play/:id') return viewer(el, ctx, Number(ctx.params.id));
   if (r === '/playbook/book/:id') return book(el, ctx, Number(ctx.params.id));
@@ -24,7 +25,10 @@ export default async function playbook(el, ctx) {
 }
 const staffTabs = pbTabs;
 const protect = (root) => { root.addEventListener('contextmenu', (e) => e.preventDefault()); root.addEventListener('copy', (e) => e.preventDefault()); root.addEventListener('dragstart', (e) => e.preventDefault()); };
-const loadPositions = () => api.get('/api/pb/positions').then(setPositions).catch(() => {});
+// Positions are for staff with playbook access and for players drawing shared plays; parents, trainers and
+// volunteers without playbook access skip the call (it would only return 403).
+let canPositions = true;
+const loadPositions = () => (canPositions ? api.get('/api/pb/positions').then(setPositions).catch(() => {}) : Promise.resolve());
 
 // ---------- Playbooks dashboard (PB-1, PB-2, PB-5, PB-6, PL-6) ----------
 async function dashboard(el, ctx) {
@@ -157,7 +161,8 @@ function duplicateTo(ctx, p, books) {
 async function library(el, ctx) {
   const staff = ctx.me.caps.staff;
   const q = ctx.query;
-  const [plays, books, facets, cfg] = await Promise.all([api.get(`/api/plays?${new URLSearchParams(q)}`), api.get('/api/playbooks'), api.get('/api/playbook/facets').catch(() => ({ folders: [], tags: [] })), api.get('/api/playbook/config'), loadPositions()]);
+  const [plays, books, facets, cfg] = await Promise.all([api.get(`/api/plays?${new URLSearchParams(q)}`), api.get('/api/playbooks'), api.get('/api/playbook/facets').catch(() => ({ folders: [], tags: [] })), api.get('/api/playbook/config')]);
+  if (plays.length) await loadPositions(); // only needed to draw plays
   const edit = cfg.can_edit && staff;
   set(el, html`<div class="page-head"><div><h1>${staff ? 'Playbook' : 'My plays'}</h1><div class="sub">${staff ? 'Plays are view-only inside the app, watermarked and logged.' : 'Plays your coaches assigned to you. View-only and watermarked with your name.'}</div></div>
     <div class="actions">${edit ? html`<button id="nb">New playbook</button><button class="primary" id="np">New play</button>` : ''}${!staff ? html`<a class="btn" href="/playbook/installs">Install sheets</a>` : ''}</div></div>
