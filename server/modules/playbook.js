@@ -21,6 +21,27 @@ export default function playbook(ctx) {
     db.run('UPDATE plays SET playbook_id=? WHERE program_id=? AND playbook_id IS NULL', id, pid);
   }
   const bookIn = (pid, id) => db.get('SELECT * FROM playbooks WHERE id=? AND program_id=?', Number(id), pid);
+  // Deleting plays: SQLite can hand a deleted play's id to the next new play, so remove every reference first
+  // (shares, install sheets, study/quiz assignments, view log) or the new play would inherit the old one's audience.
+  function deletePlays(pid, ids) {
+    if (!ids.length) return;
+    const gone = new Set(ids.map(Number));
+    const scrub = (table) => {
+      for (const r of db.all(`SELECT id, play_ids FROM ${table} WHERE program_id=?`, pid)) {
+        let list = []; try { list = JSON.parse(r.play_ids || '[]'); } catch { /* leave */ }
+        if (list.some((x) => gone.has(Number(x)))) db.run(`UPDATE ${table} SET play_ids=? WHERE id=?`, JSON.stringify(list.filter((x) => !gone.has(Number(x)))), r.id);
+      }
+    };
+    db.tx(() => {
+      scrub('install_sheets'); scrub('assignments');
+      for (const id of gone) {
+        db.run('DELETE FROM play_shares WHERE play_id=? AND program_id=?', id, pid);
+        db.run('DELETE FROM play_views WHERE play_id=?', id);
+        db.run('UPDATE pb_calls SET play_id=NULL WHERE play_id=? AND program_id=?', id, pid);
+        db.run('DELETE FROM plays WHERE id=? AND program_id=?', id, pid);
+      }
+    });
+  }
 
   // Which plays can a non-staff user see? Shares (play or playbook) and install sheets addressed to them.
   function visiblePlayIds(u) {
@@ -113,11 +134,9 @@ export default function playbook(ctx) {
     const b = bookIn(user.program_id, params.id);
     need(b, 404, 'Playbook not found');
     const ids = db.all('SELECT id FROM plays WHERE playbook_id=? AND program_id=?', b.id, user.program_id).map((r) => r.id);
-    db.tx(() => {
-      for (const id of ids) { db.run('DELETE FROM play_shares WHERE play_id=? AND program_id=?', id, user.program_id); db.run('DELETE FROM plays WHERE id=?', id); }
-      db.run('DELETE FROM play_shares WHERE playbook_id=? AND program_id=?', b.id, user.program_id);
-      db.run('DELETE FROM playbooks WHERE id=?', b.id);
-    });
+    deletePlays(user.program_id, ids);
+    db.run('DELETE FROM play_shares WHERE playbook_id=? AND program_id=?', b.id, user.program_id);
+    db.run('DELETE FROM playbooks WHERE id=?', b.id);
     audit(user, 'delete', 'playbook', b.id, { name: b.name, plays_deleted: ids.length });
     return { ok: true, plays_deleted: ids.length };
   });
@@ -253,7 +272,7 @@ export default function playbook(ctx) {
   });
   router.del('/api/plays/:id', ({ user, params }) => {
     requireEdit(user);
-    db.run('DELETE FROM plays WHERE id=? AND program_id=?', Number(params.id), user.program_id);
+    if (db.get('SELECT 1 FROM plays WHERE id=? AND program_id=?', Number(params.id), user.program_id)) deletePlays(user.program_id, [Number(params.id)]);
     audit(user, 'delete', 'play', Number(params.id));
     return { ok: true };
   });

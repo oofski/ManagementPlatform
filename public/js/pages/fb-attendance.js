@@ -50,7 +50,7 @@ export async function trendsSection(el, q, st) {
 export async function playerAttendanceCard(el, playerId) {
   const r = await api.get(`/api/fb/attendance/player/${playerId}`);
   set(el, html`<div class="card"><div class="hd"><h2>Attendance</h2><span class="r faint" style="font-size:12px">Practices and workouts this season</span></div><div class="bd">
-    <div class="grid g4" style="margin-bottom:10px">
+    <div class="grid g2" style="margin-bottom:10px">
       <div class="stat"><div class="k">Rate</div><div class="v">${r.rate == null ? '—' : `${r.rate}%`}</div><div class="d">${r.events} events</div></div>
       <div class="stat"><div class="k">Current streak</div><div class="v">${r.current_streak}</div><div class="d">best ${r.best_streak}</div></div>
       <div class="stat"><div class="k">Practices</div><div class="v">${r.practice_rate == null ? '—' : `${r.practice_rate}%`}</div></div>

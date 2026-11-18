@@ -49,7 +49,7 @@ async function heat(el, ctx, head, me) {
   set(el, html`${head}
     ${heatBanner(d.today)}
     <div class="grid g-side">
-      <div class="stack">
+      <div class="stack" style="min-width:0">
         ${me.heat_log ? html`<div class="card"><div class="hd"><h2>Log a reading</h2></div><div class="bd"><form id="hf"><div class="fields">
           ${field('Date', html`<input type="date" name="date" value="${todayISO()}" required>`)}
           ${field('Reading', html`<select name="reading_type">${options([['wbgt', 'WBGT (°F)'], ['heat_index', 'Heat index (°F)']], 'wbgt')}</select>`)}
@@ -58,16 +58,16 @@ async function heat(el, ctx, head, me) {
           ${field('Equipment', html`<select name="equipment">${options(EQUIP, '')}</select>`)}
           ${field('Team', html`<select name="team_id">${options(teams, '', { blank: 'All' })}</select>`)}
         </div>${field('Notes', html`<input name="notes" placeholder="Extra water breaks, moved indoors">`)}<button class="primary">Save reading</button></form></div></div>` : ''}
-        <div class="card"><div class="hd"><h2>Log</h2><span class="r faint" style="font-size:12px">last 30 days</span></div><div class="bd flush tbl-wrap"><table><thead><tr><th>Date</th><th>Day</th><th>Reading</th><th class="num">Min</th><th>Equipment</th><th>Team</th><th>By</th><th></th></tr></thead><tbody>
+        <div class="card"><div class="hd"><h2>Log</h2><span class="r faint" style="font-size:12px">since ${fmtDate(d.from, { dow: false })}</span></div><div class="bd flush tbl-wrap"><table><thead><tr><th>Date</th><th>Day</th><th>Reading</th><th class="num">Min</th><th>Equipment</th><th>Team</th><th>By</th><th></th></tr></thead><tbody>
           ${d.logs.map((l) => html`<tr><td>${fmtDate(l.date)}</td><td>${l.day ?? '—'}</td><td>${l.reading_type === 'wbgt' ? 'WBGT' : 'Heat index'} ${l.reading}${(d.limits[l.reading_type] && l.reading >= d.limits[l.reading_type].stop) ? html` <span class="badge bad">Stop</span>` : (d.limits[l.reading_type] && l.reading >= d.limits[l.reading_type].caution) ? html` <span class="badge warn">Caution</span>` : ''}</td>
             <td class="num">${l.duration_min ?? ''}</td><td>${EQL[l.equipment] || '—'}${l.over ? html` <span class="badge bad">Over schedule</span>` : ''}</td><td class="s">${l.team_name || 'All'}</td><td class="s">${l.by_name || ''}</td>
             <td>${me.heat_log ? html`<button class="sm ghost" data-del="${l.id}" aria-label="Delete">✕</button>` : ''}</td></tr>`)}
-        </tbody></table>${!d.logs.length ? empty('No readings logged in the last 30 days.') : ''}</div></div>
+        </tbody></table>${!d.logs.length ? empty('No readings logged yet.') : ''}</div></div>
       </div>
-      <div class="card"><div class="hd"><h2>State schedule</h2>${admin ? html`<span class="r"><button class="sm" id="edit">Edit</button></span>` : ''}</div><div class="bd">
+      <div class="card" style="min-width:0"><div class="hd"><h2>State schedule</h2>${admin ? html`<span class="r"><button class="sm" id="edit">Edit</button></span>` : ''}</div><div class="bd">
         <p class="muted">${d.start_date ? html`Day 1 was ${fmtDate(d.start_date, { year: true })}.` : 'Set the first practice date to turn on day-by-day checks.'} Practice plans show a warning when a day goes over the schedule.</p>
-        <div class="tbl-wrap"><table><thead><tr><th>Days</th><th>Equipment</th><th class="num">Practices</th><th class="num">Max min</th><th>Contact</th></tr></thead><tbody>
-          ${d.schedule.map((r) => html`<tr><td>${r.from}–${r.to}</td><td>${EQL[r.equipment] || r.equipment}</td><td class="num">${r.max_practices}</td><td class="num">${r.max_minutes}</td><td>${r.contact ? 'Yes' : 'No'}</td></tr>`)}</tbody></table></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Days</th><th>Equipment</th><th class="num">A day</th><th class="num">Max min</th><th>Contact</th></tr></thead><tbody>
+          ${d.schedule.map((r) => html`<tr><td style="white-space:nowrap">${r.from}–${r.to}</td><td>${({ helmet: 'Helmet', shells: 'Shells', full: 'Full pads' })[r.equipment] || r.equipment}</td><td class="num">${r.max_practices}</td><td class="num">${r.max_minutes}</td><td>${r.contact ? 'Yes' : 'No'}</td></tr>`)}</tbody></table></div>
         <p class="help" style="margin-top:8px">Limits: heat index caution ${d.limits.heat_index?.caution}, stop ${d.limits.heat_index?.stop} · WBGT caution ${d.limits.wbgt?.caution}, stop ${d.limits.wbgt?.stop}. Use your state association's rules.</p>
       </div></div>
     </div>`);

@@ -187,7 +187,7 @@ export function createEditor(host, opts) {
       const t = { id: M.uid('t'), x, y, text: 'Note' };
       S.data.texts.push(t); S.sel = { kind: 'text', id: t.id };
     }
-    S.pending = null; drawTiles(); commit();
+    S.pending = null; drawTiles(); commit(); status();
     if (item.pal === 'text') setTimeout(() => { const ta = opts.selEl?.querySelector('[data-k=text]'); if (ta) { ta.focus(); ta.select(); } }, 30);
   }
   function deleteSel() {
@@ -509,6 +509,11 @@ export async function playDesigner(el, ctx, idParam) {
     if (side === 'defense') data.view = cfg.dc_mode ? 'defense' : 'offense';
   }
   data.formations ||= {};
+  if (!isNew && meta.formation && !data.formations[SIDE_TEAM[side]]) {
+    // v1 plays only stored the formation's name; link it to the saved formation of that name when there is one.
+    const f = formations.find((x) => x.name === meta.formation && x.side === (side === 'defense' ? 'defense' : 'offense'));
+    if (f) data.formations[SIDE_TEAM[side]] = { id: f.id, name: f.name };
+  }
   const back = isNew ? `/playbook/book/${bookId}${side === 'defense' ? '?side=defense' : ''}` : `/playbook/play/${idParam}`;
   ctx.setTitle(isNew ? 'New play' : `Edit: ${meta.name}`);
   let dirty = false;

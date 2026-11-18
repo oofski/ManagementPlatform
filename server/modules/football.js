@@ -449,12 +449,12 @@ export default function football(ctx) {
   }
   router.get('/api/fb/heat', ({ user, query }) => {
     staffOnly(user);
-    const from = query.from || addDays(today(), -30); const to = query.to || today();
     const s = core.settings(user.program_id);
+    const from = query.from || [s.heat_start_date, addDays(today(), -30)].filter(Boolean).sort()[0]; const to = query.to || today();
     const logs = db.all(`SELECT h.*, u.name by_name, t.name team_name FROM fb_heat_logs h LEFT JOIN users u ON u.id=h.by_user LEFT JOIN teams t ON t.id=h.team_id
       WHERE h.program_id=? AND h.date>=? AND h.date<=? ORDER BY h.date DESC, h.id DESC`, user.program_id, from, to)
       .map((l) => { const hr = heatRule(s, l.date); return { ...l, day: hr?.rule ? hr.day : null, allowed: hr?.rule?.equipment || null, over: !!(hr?.rule && l.equipment && EQUIP.indexOf(l.equipment) > EQUIP.indexOf(hr.rule.equipment)) }; });
-    return { logs, start_date: s.heat_start_date, schedule: s.heat_schedule, limits: s.heat_limits, today: heatCheck(user.program_id, today()) };
+    return { from, logs, start_date: s.heat_start_date, schedule: s.heat_schedule, limits: s.heat_limits, today: heatCheck(user.program_id, today()) };
   });
   router.post('/api/fb/heat', ({ user, body }) => {
     need(can(user, 'heat.log'), 403, 'Coaches and trainers log heat readings');
@@ -624,7 +624,7 @@ export default function football(ctx) {
     need(playerOf(user.program_id, id), 404, 'Player not found');
     const f = {};
     for (const k of ['physical_date', 'physical_expires']) if (body[k] !== undefined) { need(!body[k] || /^\d{4}-\d{2}-\d{2}$/.test(body[k]), 400, 'Dates are YYYY-MM-DD'); f[k] = body[k] || null; }
-    if (body.physical_date && body.physical_expires === undefined && !db.get('SELECT physical_expires FROM fb_eligibility WHERE player_id=?', id)?.physical_expires) f.physical_expires = addDays(body.physical_date, 365);
+    if (body.physical_date && !body.physical_expires) f.physical_expires = addDays(body.physical_date, 365); // a new physical is good for a year
     for (const k of ['consent', 'emergency_contact', 'insurance', 'fees_paid']) if (body[k] !== undefined) f[k] = body[k] ? 1 : 0;
     if (body.academic !== undefined) { need(['eligible', 'probation', 'ineligible', null, ''].includes(body.academic), 400, 'Academic status is eligible, probation or ineligible'); f.academic = body.academic || null; }
     for (const k of ['insurance_note', 'fees_note', 'notes']) if (body[k] !== undefined) f[k] = body[k] ? String(body[k]).slice(0, 500) : null;

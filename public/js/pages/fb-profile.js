@@ -90,7 +90,7 @@ export async function profileExtras(el, ctx, p) {
     const eBox = add('elig');
     const loadElig = () => api.get(`/api/fb/eligibility/player/${p.id}`).then((e) => {
       set(eBox, html`<div class="card"><div class="hd"><h2>Eligibility</h2><span class="r">${eligBadge(e)} ${me.eligibility_edit ? html`<button class="sm" data-edit-elig>Edit</button>` : ''}</span></div>
-        <ul class="list">${Object.entries(ELIG_LABELS).map(([k, l]) => html`<li><span class="dot ${e.items[k] ? 'ok' : 'bad'}"></span><span class="grow">${l}</span><span class="s">${k === 'physical' && e.physical_expires ? html`${e.expired ? html`<span class="badge bad">Expired</span> ` : e.expiring ? html`<span class="badge warn">Expires soon</span> ` : ''}until ${fmtDate(e.physical_expires, { year: true })}` : k === 'academic' && e.academic ? e.academic : ''}</span></li>`)}</ul>
+        <ul class="list">${Object.entries(ELIG_LABELS).map(([k, l]) => html`<li><span class="dot ${e.items[k] ? 'ok' : 'bad'}"></span><span class="grow">${l}</span><span class="s">${!e.items[k] ? html`<span class="badge bad">Missing</span> ` : ''}${k === 'physical' && e.physical_expires ? html`${e.expired ? html`<span class="badge bad">Expired</span> ` : e.expiring ? html`<span class="badge warn">Expires soon</span> ` : ''}until ${fmtDate(e.physical_expires, { year: true })}` : k === 'academic' && e.academic ? e.academic : ''}</span></li>`)}</ul>
         ${!staff && !e.cleared && ctx.me.user.role === 'parent' ? html`<div class="ft"><a href="/forms">Sign the forms</a></div>` : ''}</div>`);
       const b = eBox.querySelector('[data-edit-elig]');
       if (b) b.onclick = () => eligibilityForm(ctx, p.id, p.name, e, loadElig);
@@ -117,7 +117,7 @@ export async function profileExtras(el, ctx, p) {
   // F-18 recruiting profile link
   if (staff || mine) {
     const rBox = add('rec');
-    set(rBox, html`<div class="card"><div class="bd row"><span class="grow">Recruiting profile${p.class_year ? html` <span class="muted">· class of ${p.class_year}</span>` : ''}</span><a class="btn sm" href="/recruiting/${p.id}">Open</a></div></div>`);
+    set(rBox, html`<div class="card"><div class="bd row"><span>Recruiting profile${p.class_year ? html` <span class="muted">· class of ${p.class_year}</span>` : ''}</span><span class="spacer"></span><a class="btn sm" href="/recruiting/${p.id}">Open</a></div></div>`);
   }
 }
 const bar6 = (stage, n) => html`<div class="row" style="gap:3px;flex-wrap:nowrap">${Array.from({ length: n }, (_, i) => html`<span style="flex:1;height:6px;border-radius:3px;background:${i < stage - 1 ? 'var(--ok)' : i === stage - 1 ? 'var(--warn)' : 'var(--line)'}"></span>`)}</div>`;

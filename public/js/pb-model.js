@@ -22,7 +22,7 @@ export function groupPlays(plays, by) {
   const add = (k, p) => { if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); };
   const sorted = plays.slice().sort((a, b) => a.name.localeCompare(b.name));
   for (const p of sorted) {
-    if (by === 'name') add((p.name.trim()[0] || '#').toUpperCase().replace(/[^A-Z]/, '#'), p);
+    if (by === 'name') add('All plays, A to Z', p);
     else if (by === 'formation') add(p.formation || 'No formation', p);
     else {
       const tags = p.situation?.[by] || [];

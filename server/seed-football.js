@@ -28,7 +28,7 @@ export function seedFootball(db, { pid, staff, players, demoQB, demoParent, seas
     if (i % 29 === 8) expires = addDays(day, -6);   // expired
     db.insert('fb_eligibility', {
       player_id: p.id, physical_date: physical, physical_expires: expires, consent: p.id === demoQB.id ? 0 : r > 0.08 ? 1 : 0, emergency_contact: p.id === demoQB.id ? 0 : r > 0.12 ? 1 : 0,
-      insurance: rnd() > 0.06 ? 1 : 0, insurance_note: 'School policy', fees_paid: rnd() > 0.1 ? 1 : 0, fees_note: null,
+      insurance: rnd() > 0.03 ? 1 : 0, insurance_note: 'School policy', fees_paid: rnd() > 0.04 ? 1 : 0, fees_note: null,
       academic: i % 31 === 7 ? 'probation' : i % 41 === 9 ? 'ineligible' : 'eligible', updated_by: staff.at, updated_at: now,
     });
   });

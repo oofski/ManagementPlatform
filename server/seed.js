@@ -1,6 +1,7 @@
 // Demo data: one program, three levels, ~20 coaches, ~95 players with parents and a season of activity.
 import { hashPassword, token, nowLocal, today, addDays, addMinutes, parseLocal, fmtLocal, DEFAULT_SETTINGS } from './core.js';
 import { fileURLToPath } from 'node:url';
+import { ensurePositions } from './modules/playbook-v2.js';
 import { seedFootball } from './seed-football.js';
 import { seedWeightRoom } from './strength-seed.js';
 
@@ -304,6 +305,23 @@ export function seed(db) {
     db.insert('play_shares', { program_id: pid, playbook_id: pbDef, audience: ['unit:defense'], by_user: staff.dc });
     const install = db.insert('install_sheets', { program_id: pid, name: `Week ${Math.ceil((parseLocal(day + 'T00:00') - parseLocal(seasonStart + 'T00:00')) / 6048e5)} offense install`, play_ids: [mesh, zone, fourVerts], notes: 'Learn your assignment on each play before Tuesday practice.', audience: [`team:${tV}`, 'unit:offense'], created_by: staff.oc });
     for (const p of vPlayers.filter((p) => p.units.includes('offense')).slice(0, 14)) db.insert('play_views', { install_id: install, user_id: p.id, context: 'install' });
+    // v2 playbook: positions, play tags (Group By / Playcaller), a few custom routes and play calls
+    ensurePositions(db, pid);
+    const tagPlay = (id, play_type, distance, down_distance) => db.run('UPDATE plays SET situation=? WHERE id=?', JSON.stringify({ play_type, distance, down_distance }), id);
+    tagPlay(mesh, ['Pass'], ['Medium'], ['2nd & Medium', '3rd & Medium']);
+    tagPlay(zone, ['Run'], ['Short'], ['1st & 10', '2nd & Short', '3rd & Short', 'Goal line']);
+    tagPlay(fourVerts, ['Pass'], ['Long'], ['2nd & Long', '3rd & Long', '2-minute']);
+    tagPlay(quarters, ['Base', 'Zone', 'Coverage'], ['Medium', 'Long'], ['1st & 10', '2nd & Long']);
+    tagPlay(blitz, ['Blitz', 'Zone'], ['Short', 'Medium'], ['3rd & Short', '3rd & Medium', 'Red zone']);
+    db.insert('formations', { program_id: pid, name: 'Gun Trips Right', side: 'offense', data: shotgun().map((p) => (p.label === 'H' ? { ...p, x: 70, y: 33 } : p.label === 'Y' ? { ...p, x: 80, y: 32 } : p)) });
+    db.insert('formations', { program_id: pid, name: 'Nickel 4-2-5', side: 'defense', data: d1.map((p) => ({ ...p, path: [] })).map((p) => (p.label === 'S' ? { ...p, label: 'N', x: 72, y: 24 } : p)) });
+    const rt = (name, grp, points, smart = 1, type = 'route') => db.insert('pb_routes', { program_id: pid, name, grp, side: 'O', smart, data: { points, type, opts: [] }, created_by: staff.oc, updated_at: nowLocal() });
+    rt('12-yard dig', 'Ridgeview concepts', [[0, -13], [9, -13]]);
+    rt('Bench (7-yard out-and-up)', 'Ridgeview concepts', [[0, -8], [-4, -10, 1], [-6, -16, 1]]);
+    rt('Snag', 'Ridgeview concepts', [[1, -5], [0.5, -6.5]]);
+    for (const [play_id, down, distance, result, mins] of [[zone, 1, 10, '+4', 95], [mesh, 2, 6, '+8, first down', 90], [fourVerts, 3, 9, 'Incomplete', 60], [zone, 3, 2, '+3, first down', 30]]) {
+      db.insert('pb_calls', { program_id: pid, playbook_id: pbOff, play_id, play_name: db.get('SELECT name FROM plays WHERE id=?', play_id).name, down, distance, result, by_user: staff.oc, at: addMinutes(nowLocal(), -mins) });
+    }
 
     // ---------- Depth charts ----------
     const SL = {

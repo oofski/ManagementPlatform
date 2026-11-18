@@ -1,29 +1,164 @@
-// Module 3: Playbook and play designer — library with search/filters, designer (players, routes, motion,
-// formations, assignments, quiz), animated viewer with watermark and view-only protection, versions,
-// delivery to audiences, install sheets with view tracking, knowledge checks and game mode.
+// Module 3: Playbook — v2 Playbooks dashboard (PB-1..PB-6), playbook page with Offense/Defense tabs, Group By and
+// play cards (PL-1..PL-6), the animated viewer with watermark and view-only protection, versions, export (PNG/PDF),
+// delivery to audiences, install sheets with view tracking, knowledge checks and game mode. The Play Designer is in
+// ../playbook-designer.js; Formations, Routes, Positions and Playcaller Mode have their own page files.
 import { api } from '../api.js';
 import { html, set, $, $$, on, modal, toast, errToast, formData, options, checked, field, audienceField, wireAudience, fmtDT, ago, cap, empty,
-  confirmDialog, raw, tabs, ROLE, esc } from '../ui.js';
-import { renderPlay, thumb, svgPoint, watermarkHtml, animator, PATH_TYPES } from '../field.js';
+  confirmDialog, raw, ROLE, esc } from '../ui.js';
+import { renderPlay, thumb, svgPoint, flipPt, watermarkHtml, animator, setPositions, displayLetter, normalizePlay } from '../field.js';
+import { icon } from '../icons.js';
+import { pbTabs, bindMenu, inlineRename, sideLabel } from '../pb-ui.js';
+import { GROUP_BY, groupPlays } from '../pb-model.js';
+import { openExport } from '../export.js';
 
 export default async function playbook(el, ctx) {
   const r = ctx.route;
-  if (r === '/playbook/play/:id/edit') return designer(el, ctx, ctx.params.id);
+  if (r === '/playbook/play/:id/edit') return (await import('../playbook-designer.js')).playDesigner(el, ctx, ctx.params.id);
   if (r === '/playbook/play/:id') return viewer(el, ctx, Number(ctx.params.id));
+  if (r === '/playbook/book/:id') return book(el, ctx, Number(ctx.params.id));
   if (r === '/playbook/installs') return installs(el, ctx);
   if (r === '/playbook/install/:id') return install(el, ctx, Number(ctx.params.id));
   if (r === '/playbook/game') return gameMode(el, ctx);
   if (r === '/playbook/shares') return shares(el, ctx);
-  return library(el, ctx);
+  return ctx.me.caps.staff ? dashboard(el, ctx) : library(el, ctx);
 }
-const staffTabs = (active) => tabs([['plays', 'Plays', '/playbook'], ['installs', 'Install sheets', '/playbook/installs'], ['shares', 'Delivery', '/playbook/shares'], ['game', 'Game mode', '/playbook/game']], active);
+const staffTabs = pbTabs;
 const protect = (root) => { root.addEventListener('contextmenu', (e) => e.preventDefault()); root.addEventListener('copy', (e) => e.preventDefault()); root.addEventListener('dragstart', (e) => e.preventDefault()); };
+const loadPositions = () => api.get('/api/pb/positions').then(setPositions).catch(() => {});
 
+// ---------- Playbooks dashboard (PB-1, PB-2, PB-5, PB-6, PL-6) ----------
+async function dashboard(el, ctx) {
+  const q = ctx.query.q || '';
+  const [books, cfg, hits] = await Promise.all([api.get('/api/playbooks'), api.get('/api/playbook/config'), q ? api.get(`/api/plays?q=${encodeURIComponent(q)}`) : Promise.resolve(null)]);
+  if (hits) await loadPositions();
+  const edit = cfg.can_edit;
+  const openSide = cfg.dc_mode ? '?side=defense' : '';
+  set(el, html`<div class="page-head"><div><h1>Playbooks</h1><div class="sub">Every play lives in a playbook. Plays are view-only for players, watermarked and logged.</div></div>
+    <div class="actions"><a class="btn" href="/playbook/playcaller">${icon('play', 14)} Playcaller mode</a>${edit ? html`<button class="primary" id="nb">${icon('plus', 14)} Add Playbook</button>` : ''}</div></div>
+    ${staffTabs('books')}
+    <div class="filters"><input type="search" id="q" placeholder="Search all plays" value="${q}">
+      <label class="check" title="Open the defensive side of a playbook first"><input type="checkbox" id="dc" ${checked(cfg.dc_mode)}> Defensive Coordinator Mode</label></div>
+    ${hits ? html`<div class="card" style="margin-bottom:16px"><div class="hd"><h2>${hits.length} plays match “${q}”</h2><span class="r"><a href="/playbook">Clear</a></span></div>
+      ${hits.length ? html`<ul class="list">${hits.map((p) => html`<li class="click" data-href="${edit ? `/playbook/play/${p.id}/edit` : `/playbook/play/${p.id}`}"><div class="grow"><div class="t">${p.name}</div><div class="s">${[books.find((b) => b.id === p.playbook_id)?.name, sideLabel[p.side], p.formation].filter(Boolean).join(' · ')}</div></div></li>`)}</ul>` : html`<div class="bd muted">No plays match.</div>`}</div>` : ''}
+    ${books.length ? html`<div class="pb-books">${books.map((b) => html`<div class="card pb-book" data-book="${b.id}" data-href="/playbook/book/${b.id}${openSide}" tabindex="0" role="link" aria-label="Open ${b.name}">
+        <div class="t" data-bname>${b.name}</div>
+        <div class="s muted">${b.offense_count} offense · ${b.defense_count} defense${b.special_count ? ` · ${b.special_count} special teams` : ''}</div>
+        <div class="s faint">${b.last_edit ? `Last edited ${ago(b.last_edit)}` : 'No plays yet'}</div>
+        ${edit ? html`<button class="sm ghost icon more" data-more aria-label="Playbook actions">⋯</button>` : ''}</div>`)}</div>`
+    : empty(edit ? 'No playbooks yet. Create one with Add Playbook; plays are added inside a playbook.' : 'No playbooks yet.')}`);
+  on(el, 'click', '[data-href]', (e, t) => { if (e.target.closest('input, button')) return; ctx.navigate(t.dataset.href); });
+  on(el, 'keydown', '[data-href]', (e, t) => { if (e.key === 'Enter') ctx.navigate(t.dataset.href); });
+  $('#q', el).onchange = (e) => ctx.navigate(e.target.value ? `/playbook?q=${encodeURIComponent(e.target.value)}` : '/playbook');
+  $('#dc', el).onchange = async (e) => { await api.put('/api/pb/prefs', { dc_mode: e.target.checked }); toast(e.target.checked ? 'Playbooks open on the defense side' : 'Playbooks open on the offense side'); ctx.reload(); };
+  if ($('#nb', el)) $('#nb', el).onclick = () => addBook(ctx);
+  if (edit) bindMenu(el, '[data-book]', (t) => bookMenu(ctx, books.find((b) => b.id === Number(t.dataset.book)), { nameEl: t.querySelector('[data-bname]') }));
+}
+function addBook(ctx) {
+  modal({ title: 'Add playbook', body: html`<form id="bf" onsubmit="return false">${field('Name', html`<input name="name" required placeholder="Varsity offense">`)}${field('Description', html`<input name="description">`)}</form>`,
+    actions: [{ label: 'Cancel' }, { label: 'Create playbook', primary: true, onClick: async (r) => { const f = formData(r.querySelector('#bf')); if (!f.name.trim()) { toast('Name the playbook', 'warn'); return false; } const res = await api.post('/api/playbooks', f); ctx.navigate(`/playbook/book/${res.id}`); } }] });
+}
+function bookMenu(ctx, b, { nameEl, onRenamed } = {}) {
+  return [
+    { label: 'Open', onClick: () => ctx.navigate(`/playbook/book/${b.id}`) },
+    { label: 'Rename', onClick: () => (nameEl ? inlineRename(nameEl, b.name, async (v) => { await api.put(`/api/playbooks/${b.id}`, { name: v }); b.name = v; toast('Renamed'); onRenamed?.(v); }) : renameBook(ctx, b)) },
+    { label: 'Add Play to Playbook', onClick: () => ctx.navigate(`/playbook/play/new/edit?book=${b.id}`) },
+    { label: 'Add defensive play', onClick: () => ctx.navigate(`/playbook/play/new/edit?book=${b.id}&side=defense`) },
+    { label: 'Send to players', onClick: () => shareDialog(ctx, { playbook_id: b.id }) },
+    '-',
+    { label: 'Delete playbook', danger: true, onClick: () => deleteBook(ctx, b) },
+  ];
+}
+function renameBook(ctx, b) {
+  modal({ title: 'Rename playbook', body: html`<form id="rf" onsubmit="return false">${field('Name', html`<input name="name" value="${b.name}" required>`)}</form>`,
+    actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, onClick: async (r) => { await api.put(`/api/playbooks/${b.id}`, formData(r.querySelector('#rf'))); ctx.reload(); } }] });
+}
+async function deleteBook(ctx, b) {
+  const n = b.play_count ?? 0;
+  const ok = await confirmDialog(`Delete the playbook “${b.name}”? This also deletes ${n === 1 ? 'the 1 play' : `all ${n} plays`} inside it, for everyone, including their version history. This cannot be undone.`, { title: 'Delete playbook and its plays', danger: true, ok: `Delete playbook and ${n} play${n === 1 ? '' : 's'}` });
+  if (!ok) return;
+  try { const r = await api.del(`/api/playbooks/${b.id}`); toast(`Deleted ${b.name} and ${r.plays_deleted} play${r.plays_deleted === 1 ? '' : 's'}`); ctx.navigate('/playbook'); } catch (e) { errToast(e); }
+}
+
+// ---------- Playbook page (PB-2..PB-6, PL-1..PL-5) ----------
+async function book(el, ctx, id) {
+  const [b, plays, books, cfg] = await Promise.all([api.get(`/api/playbooks/${id}`), api.get(`/api/plays?playbook_id=${id}`), api.get('/api/playbooks'), api.get('/api/playbook/config')]);
+  await loadPositions();
+  const edit = cfg.can_edit;
+  ctx.setTitle(b.name);
+  const side = ['offense', 'defense', 'special'].includes(ctx.query.side) ? ctx.query.side : (cfg.dc_mode ? 'defense' : 'offense');
+  let groupBy = ctx.query.group || (() => { try { return localStorage.getItem('pb.groupBy') || 'name'; } catch { return 'name'; } })();
+  let filter = '';
+  const count = (s) => plays.filter((p) => p.side === s).length;
+  set(el, html`<div class="page-head"><div style="min-width:0;flex:1">
+      ${edit ? html`<div class="row" style="gap:6px;flex-wrap:nowrap"><input class="pb-rename" id="bname" value="${b.name}" aria-label="Playbook name"><button class="sm primary" id="bsave" hidden>Save</button></div>` : html`<h1>${b.name}</h1>`}
+      <div class="sub">${b.description ? `${b.description} · ` : ''}${plays.length} play${plays.length === 1 ? '' : 's'}. ${edit ? 'Click a play to edit it; right-click for more.' : ''}</div></div>
+    <div class="actions"><a class="btn" href="/playbook">All playbooks</a><a class="btn" href="/playbook/playcaller?book=${id}">${icon('play', 14)} Playcaller</a>
+      ${edit ? html`<button id="share">Send to players</button><button class="primary" id="np">${icon('plus', 14)} Add Play</button>` : ''}</div></div>
+    <div class="tabs" role="tablist">${['offense', 'defense', ...(count('special') ? ['special'] : [])].map((s) => html`<a href="/playbook/book/${id}?side=${s}" class="${s === side ? 'on' : ''}" role="tab" aria-selected="${s === side}">${sideLabel[s]} <span class="faint">${count(s)}</span></a>`)}</div>
+    <div class="filters"><label class="muted" for="gb" style="font-size:13px">Group by</label><select id="gb">${options(GROUP_BY, groupBy)}</select><input type="search" id="pf" placeholder="Filter plays"></div>
+    <div id="plist"></div>
+    ${edit ? html`<div class="card" style="margin-top:28px"><div class="bd row between"><div><b>Delete playbook</b><div class="muted" style="font-size:13px">Deletes this playbook and every play inside it (${plays.length}).</div></div><button class="danger" id="delb">Delete playbook</button></div></div>` : ''}`);
+  const drawList = () => {
+    const mine = plays.filter((p) => p.side === side && (!filter || `${p.name} ${p.formation || ''} ${(p.tags || []).join(' ')}`.toLowerCase().includes(filter)));
+    if (!mine.length) { set($('#plist', el), empty(filter ? 'No plays match.' : edit ? `No ${sideLabel[side].toLowerCase()} plays yet. Add one with Add Play.` : 'No plays here yet.')); return; }
+    set($('#plist', el), groupPlays(mine, groupBy).map((g) => html`<div class="pb-group">${g.key} <span class="faint">${g.plays.length}</span></div>
+      <div class="pb-plays">${g.plays.map((p) => html`<div class="card pb-card" data-play="${p.id}" tabindex="0" role="link" aria-label="${edit ? 'Edit' : 'Open'} ${p.name}">
+        <div class="play-thumb no-copy">${raw(thumb(p.data))}</div>
+        <div class="bd" style="padding:8px 10px"><div class="nm" data-pname>${p.name}</div><div class="s muted" style="font-size:12px">${[p.formation, ...(p.situation?.play_type || [])].filter(Boolean).join(' · ') || ' '}</div></div>
+        ${edit ? html`<div class="qa"><button class="sm icon" data-qdel="${p.id}" title="Delete play" aria-label="Delete ${p.name}">✕</button><button class="sm icon" data-more aria-label="More actions">⋯</button></div>` : ''}</div>`)}</div>`));
+  };
+  drawList();
+  const open = (pid) => ctx.navigate(edit ? `/playbook/play/${pid}/edit` : `/playbook/play/${pid}`);
+  on(el, 'click', '[data-play]', (e, t) => { if (e.target.closest('button, input')) return; open(Number(t.dataset.play)); });
+  on(el, 'keydown', '[data-play]', (e, t) => { if (e.key === 'Enter' && e.target === t) open(Number(t.dataset.play)); });
+  $('#gb', el).onchange = (e) => { groupBy = e.target.value; try { localStorage.setItem('pb.groupBy', groupBy); } catch { /* ignore */ } drawList(); };
+  $('#pf', el).oninput = (e) => { filter = e.target.value.trim().toLowerCase(); drawList(); };
+  if (!edit) return;
+  const nameIn = $('#bname', el); const saveB = $('#bsave', el);
+  nameIn.oninput = () => { saveB.hidden = nameIn.value.trim() === b.name; };
+  nameIn.onkeydown = (e) => { if (e.key === 'Enter') saveB.click(); if (e.key === 'Escape') { nameIn.value = b.name; saveB.hidden = true; } };
+  saveB.onclick = async () => { const v = nameIn.value.trim(); if (!v) return toast('Name the playbook', 'warn'); try { await api.put(`/api/playbooks/${id}`, { name: v }); b.name = v; saveB.hidden = true; ctx.setTitle(v); toast('Playbook renamed'); } catch (e) { errToast(e); } };
+  $('#np', el).onclick = () => ctx.navigate(`/playbook/play/new/edit?book=${id}&side=${side}`);
+  $('#share', el).onclick = () => shareDialog(ctx, { playbook_id: id });
+  $('#delb', el).onclick = () => deleteBook(ctx, { ...b, play_count: plays.length });
+  on(el, 'click', '[data-qdel]', async (e, btn) => { e.stopPropagation(); const p = plays.find((x) => x.id === Number(btn.dataset.qdel)); await deletePlay(ctx, p); });
+  bindMenu(el, '[data-play]', (t) => {
+    const p = plays.find((x) => x.id === Number(t.dataset.play));
+    return [
+      { label: 'Edit', onClick: () => ctx.navigate(`/playbook/play/${p.id}/edit`) },
+      { label: 'View and animate', onClick: () => ctx.navigate(`/playbook/play/${p.id}`) },
+      { label: 'Rename', onClick: () => inlineRename(t.querySelector('[data-pname]'), p.name, async (v) => { const r = await api.put(`/api/plays/${p.id}`, { name: v, base_version: p.version, summary: 'Renamed' }); p.name = v; p.version = r.version; toast('Renamed'); }) },
+      { label: 'Duplicate', onClick: () => duplicatePlay(ctx, p) },
+      { label: 'Duplicate to Playbook…', onClick: () => duplicateTo(ctx, p, books) },
+      ...(cfg.can_export ? [{ label: 'Export…', onClick: () => openExport(ctx, p.id, { name: p.name }) }] : []),
+      '-',
+      { label: 'Delete', danger: true, onClick: () => deletePlay(ctx, p) },
+    ];
+  });
+}
+async function deletePlay(ctx, p) {
+  if (!(await confirmDialog(`Delete “${p.name}” for everyone?`, { danger: true, ok: 'Delete play' }))) return;
+  try { await api.del(`/api/plays/${p.id}`); toast('Play deleted'); ctx.reload(); } catch (e) { errToast(e); }
+}
+async function duplicatePlay(ctx, p) {
+  try { await api.post(`/api/plays/${p.id}/duplicate`, {}); toast(`Created ${p.name} (Copy)`); ctx.reload(); } catch (e) { errToast(e); }
+}
+function duplicateTo(ctx, p, books) {
+  modal({ title: 'Duplicate to playbook', body: html`<form id="df" onsubmit="return false">${field('Copy “' + p.name + '” into', html`<select name="playbook_id">${options(books.map((b) => [b.id, b.name]), books.find((b) => b.id !== p.playbook_id)?.id)}</select>`)}</form>`,
+    actions: [{ label: 'Cancel' }, { label: 'Duplicate', primary: true, onClick: async (r) => {
+      const f = formData(r.querySelector('#df'));
+      const res = await api.post(`/api/plays/${p.id}/duplicate`, { playbook_id: Number(f.playbook_id) });
+      toast(`Copied to ${books.find((b) => b.id === Number(f.playbook_id))?.name}`);
+      ctx.navigate(`/playbook/play/${res.id}/edit`);
+    } }] });
+}
+
+// Players: the plays shared with them (view-only).
 async function library(el, ctx) {
   const staff = ctx.me.caps.staff;
   const q = ctx.query;
-  const [plays, books, facets, cfg] = await Promise.all([api.get(`/api/plays?${new URLSearchParams(q)}`), api.get('/api/playbooks'), api.get('/api/playbook/facets').catch(() => ({ folders: [], tags: [] })), api.get('/api/playbook/config')]);
-  const edit = cfg.can_edit;
+  const [plays, books, facets, cfg] = await Promise.all([api.get(`/api/plays?${new URLSearchParams(q)}`), api.get('/api/playbooks'), api.get('/api/playbook/facets').catch(() => ({ folders: [], tags: [] })), api.get('/api/playbook/config'), loadPositions()]);
+  const edit = cfg.can_edit && staff;
   set(el, html`<div class="page-head"><div><h1>${staff ? 'Playbook' : 'My plays'}</h1><div class="sub">${staff ? 'Plays are view-only inside the app, watermarked and logged.' : 'Plays your coaches assigned to you. View-only and watermarked with your name.'}</div></div>
     <div class="actions">${edit ? html`<button id="nb">New playbook</button><button class="primary" id="np">New play</button>` : ''}${!staff ? html`<a class="btn" href="/playbook/installs">Install sheets</a>` : ''}</div></div>
     ${staff ? staffTabs('plays') : ''}
@@ -57,15 +192,19 @@ async function shareDialog(ctx, target) {
 
 // ---------- Viewer ----------
 async function viewer(el, ctx, id) {
-  const p = await api.get(`/api/plays/${id}`);
+  const [p] = await Promise.all([api.get(`/api/plays/${id}`), loadPositions()]);
   const staff = ctx.me.caps.staff;
   ctx.setTitle(p.name);
+  p.data = normalizePlay(p.data);
   let highlight = null;
-  const myPos = !staff ? null : null;
-  set(el, html`<div class="page-head"><div><h1>${p.name}</h1><div class="sub">${[cap(p.side), p.formation, p.folder].filter(Boolean).join(' · ')} · version ${p.version}</div></div>
-    <div class="actions"><a class="btn" href="/playbook">Back</a>
-      ${p.can_edit ? html`<a class="btn" href="/playbook/play/${id}/edit">Edit</a><button id="dup">Duplicate</button><button id="flip">Flip copy</button><button id="share">Send to players</button>` : ''}
-      ${p.can_export ? html`<button id="exp">Export</button>` : ''}
+  let theme = 'grass';
+  const books = staff && p.can_edit ? await api.get('/api/playbooks').catch(() => []) : [];
+  const tagList = [...(p.situation?.play_type || []), ...(p.situation?.distance || []), ...(p.situation?.down_distance || [])];
+  set(el, html`<div class="page-head"><div><h1>${p.name}</h1><div class="sub">${[cap(p.side), p.formation, p.folder].filter(Boolean).join(' · ')} · version ${p.version}</div>
+      ${tagList.length ? html`<div class="row" style="gap:4px;margin-top:6px">${tagList.map((t) => html`<span class="badge">${t}</span>`)}</div>` : ''}</div>
+    <div class="actions"><a class="btn" href="${staff && p.playbook_id ? `/playbook/book/${p.playbook_id}?side=${p.side}` : '/playbook'}">Back</a>
+      ${p.can_edit ? html`<a class="btn primary" href="/playbook/play/${id}/edit">Edit</a><button id="dup">Duplicate</button><button id="dupto">Duplicate to playbook</button><button id="flip">Flip copy</button><button id="share">Send to players</button>` : ''}
+      ${p.can_export ? html`<button id="exp">${icon('download', 14)} Export</button>` : ''}
       ${staff ? html`<a class="btn" href="/playbook/game?play=${id}">Game mode</a>` : ''}</div></div>
   <div class="designer">
     <div>
@@ -75,7 +214,8 @@ async function viewer(el, ctx, id) {
         <div class="seg">${[0.5, 1, 2].map((s) => html`<button data-speed="${s}" class="${s === 1 ? 'on' : ''}">${s}x</button>`)}</div>
         <span class="muted" id="tlabel"></span>
         <span class="spacer"></span>
-        <select id="hl" style="width:auto"><option value="">Highlight a position</option>${options([...new Set(p.data.players.map((x) => x.label))])}</select>
+        <div class="seg" aria-label="Field theme"><button data-vtheme="grass" class="on">Grass</button><button data-vtheme="paper">Paper</button></div>
+        <select id="hl" style="width:auto"><option value="">Highlight a position</option>${options([...new Set(p.data.players.map((x) => displayLetter(x)).filter(Boolean))])}</select>
       </div>
     </div>
     <div class="stack no-copy">
@@ -88,8 +228,9 @@ async function viewer(el, ctx, id) {
   </div>`);
   protect(el);
   const fw = $('#fw', el);
-  const draw = (t) => { fw.innerHTML = renderPlay(p.data, { t, highlight }) + watermarkHtml(p.watermark); $('#tlabel', el).textContent = t == null ? '' : t < 0 ? 'Pre-snap motion' : `${t.toFixed(1)} s`; };
+  const draw = (t) => { fw.innerHTML = renderPlay(p.data, { t, highlight, theme }) + watermarkHtml(p.watermark); $('#tlabel', el).textContent = t == null ? '' : t < 0 ? 'Pre-snap motion' : `${t.toFixed(1)} s`; };
   const anim = animator(p.data, draw);
+  on(el, 'click', '[data-vtheme]', (e, b) => { theme = b.dataset.vtheme; $$('[data-vtheme]', el).forEach((x) => x.classList.toggle('on', x === b)); draw(anim.time > -1.6 ? anim.time : null); });
   $('#playb', el).onclick = () => { if (anim.playing) { anim.pause(); $('#playb', el).textContent = 'Play'; } else { anim.play(); $('#playb', el).textContent = 'Pause'; } };
   $('#reset', el).onclick = () => { anim.reset(); $('#playb', el).textContent = 'Play'; };
   $('#back1', el).onclick = () => anim.step(-0.5);
@@ -102,13 +243,10 @@ async function viewer(el, ctx, id) {
   };
   if (!staff) return;
   if ($('#dup', el)) $('#dup', el).onclick = async () => { const r = await api.post(`/api/plays/${id}/duplicate`, {}); ctx.navigate(`/playbook/play/${r.id}/edit`); };
+  if ($('#dupto', el)) $('#dupto', el).onclick = () => duplicateTo(ctx, p, books);
   if ($('#flip', el)) $('#flip', el).onclick = async () => { const r = await api.post(`/api/plays/${id}/duplicate`, { flip: true }); toast('Flipped copy created'); ctx.navigate(`/playbook/play/${r.id}`); };
   if ($('#share', el)) $('#share', el).onclick = () => shareDialog(ctx, { play_id: id });
-  if ($('#exp', el)) $('#exp', el).onclick = async () => {
-    const x = await api.get(`/api/plays/${id}/export`);
-    const w = window.open('', '_blank');
-    w.document.write(`<title>${esc(x.name)}</title><body style="font-family:Arial;margin:24px"><h2>${esc(x.name)}</h2><div style="max-width:900px">${renderPlay(x.data)}</div><p>${esc(x.coaching_points || '')}</p><ul>${Object.entries(x.assignments || {}).map(([k, v]) => `<li><b>${esc(k)}</b>: ${esc(v)}</li>`).join('')}</ul><p style="color:#888">${esc(x.watermark)}</p><script>print()</script>`);
-  };
+  if ($('#exp', el)) $('#exp', el).onclick = () => openExport(ctx, id, { name: p.name });
   $('#ver', el).onclick = async () => {
     const v = await api.get(`/api/plays/${id}/versions`);
     const m = modal({ title: 'Version history', body: html`<ul class="list" style="margin:-16px">${v.map((x) => html`<li><div class="grow"><div class="t">Version ${x.version} · ${x.by_name || ''}</div><div class="s">${x.summary || ''} · ${fmtDT(x.at)}</div></div>${p.can_edit && x.version !== p.version ? html`<button class="sm" data-restore="${x.version}">Restore</button>` : ''}</li>`)}</ul>`, actions: [{ label: 'Close' }] });
@@ -122,161 +260,6 @@ async function viewer(el, ctx, id) {
     const v = await api.get(`/api/plays/${id}/quiz-results`);
     modal({ title: 'Knowledge check results', body: v.length ? html`<table><thead><tr><th>Player</th><th class="num">Score</th><th>When</th></tr></thead><tbody>${v.map((x) => html`<tr><td>${x.name}</td><td class="num">${x.score}/${x.total}</td><td>${fmtDT(x.at)}</td></tr>`)}</tbody></table>` : empty('No results yet.'), actions: [{ label: 'Close' }] });
   };
-}
-
-// ---------- Designer ----------
-async function designer(el, ctx, idParam) {
-  const isNew = idParam === 'new';
-  const [play, books, formations, cfg] = await Promise.all([
-    isNew ? Promise.resolve({ name: 'New play', side: 'offense', data: { players: [], ball: { x: 50, y: 31.5 }, quiz: [] }, tags: [], assignments: {}, version: 0 }) : api.get(`/api/plays/${idParam}`),
-    api.get('/api/playbooks'), api.get('/api/formations'), api.get('/api/playbook/config'),
-  ]);
-  if (!cfg.can_edit) { set(el, html`<div class="notice bad">You do not have edit access to the playbook.</div>`); return; }
-  const data = JSON.parse(JSON.stringify(play.data));
-  data.quiz ||= []; data.ball ||= { x: 50, y: 31.5 };
-  let tool = 'select'; let sel = null; let drawing = null; let drag = null;
-  const meta = { ...play, assignments: { ...(play.assignments || {}) } };
-  const selected = () => data.players.find((p) => p.id === sel);
-  set(el, html`<div class="page-head"><div><h1>${isNew ? 'New play' : `Edit: ${play.name}`}</h1><div class="sub">Click to place players, choose a path tool and click points on the field. Double-click or press Enter to finish a path.</div></div>
-    <div class="actions"><a class="btn" href="${isNew ? '/playbook' : `/playbook/play/${idParam}`}">Cancel</a>${!isNew ? html`<button class="danger" id="del">Delete</button>` : ''}<button class="primary" id="save">Save play</button></div></div>
-    <div class="designer">
-      <div>
-        <div class="tool-row" id="tools">
-          ${[['select', 'Select / move'], ['O', 'Add O'], ['square', 'Add square'], ['X', 'Add X'], ['path', 'Draw path'], ['motion', 'Draw motion']].map(([k, l]) => html`<button data-tool="${k}" class="${k === tool ? 'on' : ''}">${l}</button>`)}
-          <span class="spacer"></span>
-          <button id="clearp">Clear path</button><button id="delp">Delete player</button><button id="flipb">Flip</button>
-        </div>
-        <div class="field-wrap" id="fw"></div>
-        <div class="row" style="margin-top:8px">
-          <select id="formation" style="width:auto"><option value="">Load a formation…</option>${options(formations.map((f) => [f.id, `${f.name} (${f.side})`]))}</select>
-          <button id="savef">Save players as formation</button><button id="preview">Preview animation</button>
-        </div>
-      </div>
-      <div class="stack">
-        <div class="card"><div class="hd"><h3>Selected player</h3></div><div class="bd" id="psel"></div></div>
-        <div class="card"><div class="hd"><h3>Play</h3></div><div class="bd"><form id="mf">
-          ${field('Name', html`<input name="name" value="${meta.name}">`)}
-          <div class="fields">${field('Side', html`<select name="side">${options([['offense', 'Offense'], ['defense', 'Defense'], ['special', 'Special teams']], meta.side)}</select>`)}${field('Playbook', html`<select name="playbook_id">${options(books.map((b) => [b.id, b.name]), meta.playbook_id ?? '', { blank: '—' })}</select>`)}</div>
-          <div class="fields">${field('Formation', html`<input name="formation" value="${meta.formation || ''}">`)}${field('Folder', html`<input name="folder" value="${meta.folder || ''}">`)}</div>
-          ${field('Tags (comma separated)', html`<input name="tags" value="${(meta.tags || []).join(', ')}" placeholder="3rd down, red zone">`)}
-          ${field('Coaching points', html`<textarea name="coaching_points">${meta.coaching_points || ''}</textarea>`)}
-          ${field('Video link', html`<input name="video_url" value="${meta.video_url || ''}">`)}
-        </form></div></div>
-        <div class="card"><div class="hd"><h3>Assignments by position</h3></div><div class="bd" id="asg"></div></div>
-        <div class="card"><div class="hd"><h3>Knowledge check</h3><span class="r"><button class="sm" id="addq">Add question</button></span></div><div class="bd" id="quiz"></div></div>
-      </div>
-    </div>`);
-  const fw = $('#fw', el);
-  const draw = (t = null) => { fw.innerHTML = renderPlay(data, { selected: sel, t, extra: drawing && drawing.pts.length ? `<polyline points="${[drawing.start, ...drawing.pts].map((p) => p.join(',')).join(' ')}" fill="none" stroke="#ffd666" stroke-width="0.5" stroke-dasharray="1 .6"/>` : '' }); };
-  const drawSel = () => {
-    const p = selected();
-    set($('#psel', el), p ? html`<div class="fields">
-      ${field('Label', html`<input data-pk="label" value="${p.label || ''}">`)}
-      ${field('Shape', html`<select data-pk="shape">${options([['O', 'O'], ['square', 'Square'], ['X', 'X']], p.shape)}</select>`)}
-      ${field('Path type', html`<select data-pk="path_type">${options(PATH_TYPES.map((x) => [x, cap(x)]), p.path_type || 'route')}</select>`)}
-      ${field('Start delay (s)', html`<input type="number" step="0.1" min="0" data-pk="delay" value="${p.delay || 0}">`)}</div>
-      <div class="s muted">${p.path?.length || 0} path points · ${p.motion?.length || 0} motion points</div>` : html`<p class="muted">Select a player on the field.</p>`);
-  };
-  const drawAsg = () => {
-    const labels = [...new Set(data.players.map((p) => p.label).filter(Boolean))];
-    set($('#asg', el), labels.length ? labels.map((l) => field(l, html`<input data-asg="${l}" value="${meta.assignments[l] || ''}">`)) : html`<p class="muted">Add players first.</p>`);
-  };
-  const drawQuiz = () => {
-    set($('#quiz', el), data.quiz.length ? data.quiz.map((q, i) => html`<div class="field" data-qi="${i}" style="border-bottom:1px solid var(--border);padding-bottom:8px">
-      <input data-qk="q" value="${q.q}" placeholder="Question" style="margin-bottom:4px">
-      ${q.options.map((o, j) => html`<div class="inline-input" style="margin-bottom:3px"><input type="radio" name="ans${i}" data-qa="${j}" ${checked(Number(q.answer) === j)} title="Correct answer"><input data-qo="${j}" value="${o}" placeholder="Option ${j + 1}"></div>`)}
-      <button class="sm ghost danger" data-qdel="${i}">Remove</button></div>`) : html`<p class="muted">Optional questions players answer after studying the play.</p>`);
-  };
-  draw(); drawSel(); drawAsg(); drawQuiz();
-  const setTool = (t) => { tool = t; drawing = null; $$('[data-tool]', el).forEach((b) => b.classList.toggle('on', b.dataset.tool === t)); draw(); };
-  on(el, 'click', '[data-tool]', (e, b) => setTool(b.dataset.tool));
-  const finish = () => {
-    if (!drawing) return;
-    const p = data.players.find((x) => x.id === drawing.id);
-    if (p && drawing.pts.length) { if (drawing.kind === 'motion') p.motion = drawing.pts; else p.path = drawing.pts; }
-    drawing = null; draw(); drawSel();
-  };
-  const svg = () => fw.querySelector('svg');
-  fw.addEventListener('pointerdown', (e) => {
-    const pt = svgPoint(svg(), e);
-    const g = e.target.closest('[data-player]');
-    if (tool === 'select') {
-      if (g) { sel = g.dataset.player; drag = { id: sel, ox: pt[0], oy: pt[1] }; fw.setPointerCapture(e.pointerId); } else sel = null;
-      draw(); drawSel(); return;
-    }
-    if (['O', 'X', 'square'].includes(tool)) {
-      const team = tool === 'X' ? 'D' : 'O';
-      const id = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
-      data.players.push({ id, label: tool === 'X' ? 'X' : tool === 'square' ? 'C' : '', shape: tool, team, x: pt[0], y: pt[1], path: [], path_type: team === 'D' ? 'coverage' : 'route', delay: 0 });
-      sel = id; draw(); drawSel(); drawAsg(); return;
-    }
-    if (tool === 'path' || tool === 'motion') {
-      if (!drawing) {
-        if (!g) { toast('Click a player to start the path', 'warn'); return; }
-        const p = data.players.find((x) => x.id === g.dataset.player);
-        sel = p.id;
-        const start = tool === 'path' && p.motion?.length ? p.motion[p.motion.length - 1] : [p.x, p.y];
-        drawing = { id: p.id, kind: tool, start, pts: [] };
-      } else drawing.pts.push(pt);
-      draw();
-    }
-  });
-  fw.addEventListener('pointermove', (e) => {
-    if (!drag) return;
-    const pt = svgPoint(svg(), e);
-    const p = data.players.find((x) => x.id === drag.id);
-    const dx = pt[0] - drag.ox; const dy = pt[1] - drag.oy;
-    p.x = Math.round((p.x + dx) * 10) / 10; p.y = Math.round((p.y + dy) * 10) / 10;
-    p.path = (p.path || []).map(([x, y]) => [Math.round((x + dx) * 10) / 10, Math.round((y + dy) * 10) / 10]);
-    p.motion = (p.motion || []).map(([x, y]) => [Math.round((x + dx) * 10) / 10, Math.round((y + dy) * 10) / 10]);
-    drag.ox = pt[0]; drag.oy = pt[1];
-    draw();
-  });
-  fw.addEventListener('pointerup', () => { drag = null; });
-  fw.addEventListener('dblclick', finish);
-  const keyH = (e) => { if (!document.body.contains(fw)) return document.removeEventListener('keydown', keyH); if (e.key === 'Enter' && drawing) { e.preventDefault(); finish(); } if (e.key === 'Escape') { drawing = null; draw(); } };
-  document.addEventListener('keydown', keyH);
-  $('#psel', el).addEventListener('input', (e) => {
-    const p = selected(); const k = e.target.dataset.pk; if (!p || !k) return;
-    p[k] = k === 'delay' ? Number(e.target.value) : e.target.value;
-    if (k === 'shape') p.team = p.shape === 'X' ? 'D' : 'O';
-    draw(); if (k === 'label') drawAsg();
-  });
-  $('#asg', el).addEventListener('input', (e) => { if (e.target.dataset.asg) meta.assignments[e.target.dataset.asg] = e.target.value; });
-  $('#quiz', el).addEventListener('input', (e) => {
-    const box = e.target.closest('[data-qi]'); if (!box) return; const q = data.quiz[Number(box.dataset.qi)];
-    if (e.target.dataset.qk) q.q = e.target.value; if (e.target.dataset.qo !== undefined) q.options[Number(e.target.dataset.qo)] = e.target.value; if (e.target.dataset.qa !== undefined) q.answer = Number(e.target.dataset.qa);
-  });
-  on($('#quiz', el), 'click', '[data-qdel]', (e, b) => { data.quiz.splice(Number(b.dataset.qdel), 1); drawQuiz(); });
-  $('#addq', el).onclick = () => { data.quiz.push({ q: '', options: ['', '', ''], answer: 0 }); drawQuiz(); };
-  $('#clearp', el).onclick = () => { const p = selected(); if (p) { p.path = []; p.motion = []; draw(); drawSel(); } };
-  $('#delp', el).onclick = () => { if (!sel) return; data.players = data.players.filter((p) => p.id !== sel); sel = null; draw(); drawSel(); drawAsg(); };
-  $('#flipb', el).onclick = () => { for (const p of data.players) { p.x = Math.round((100 - p.x) * 10) / 10; p.path = (p.path || []).map(([x, y]) => [Math.round((100 - x) * 10) / 10, y]); p.motion = (p.motion || []).map(([x, y]) => [Math.round((100 - x) * 10) / 10, y]); } draw(); };
-  $('#formation', el).onchange = (e) => {
-    const f = formations.find((x) => x.id === Number(e.target.value)); if (!f) return;
-    const keep = data.players.filter((p) => (f.side === 'defense' ? p.team !== 'D' : p.team !== 'O'));
-    data.players = [...keep, ...JSON.parse(JSON.stringify(f.data)).map((p) => ({ ...p, id: `${p.id}-${Math.random().toString(36).slice(2, 6)}` }))];
-    if (!$('[name=formation]', el).value) $('[name=formation]', el).value = f.name;
-    e.target.value = ''; draw(); drawAsg();
-  };
-  $('#savef', el).onclick = () => modal({ title: 'Save formation', body: html`<form id="ff">${field('Name', html`<input name="name" required>`)}${field('Side', html`<select name="side">${options([['offense', 'Offense players'], ['defense', 'Defense players']])}</select>`)}</form>`, actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, onClick: async (r) => {
-    const f = formData(r.querySelector('#ff')); const team = f.side === 'defense' ? 'D' : 'O';
-    await api.post('/api/formations', { name: f.name, side: f.side, data: data.players.filter((p) => p.team === team).map((p) => ({ ...p, path: [], motion: [] })) }); toast('Formation saved');
-  } }] });
-  $('#preview', el).onclick = () => { const a = animator(data, (t) => draw(t)); a.play(); };
-  const save = async (force = false) => {
-    const f = formData($('#mf', el));
-    const body = { ...f, playbook_id: f.playbook_id ? Number(f.playbook_id) : null, tags: f.tags.split(',').map((t) => t.trim()).filter(Boolean), data, assignments: Object.fromEntries(Object.entries(meta.assignments).filter(([k, v]) => v && data.players.some((p) => p.label === k))), base_version: play.version, force };
-    data.quiz = data.quiz.filter((q) => q.q && q.options.filter(Boolean).length >= 2).map((q) => ({ ...q, options: q.options.filter(Boolean) }));
-    try {
-      if (isNew) { const r = await api.post('/api/plays', body); toast('Play created'); ctx.navigate(`/playbook/play/${r.id}`); } else { await api.put(`/api/plays/${idParam}`, body); toast('Saved'); ctx.navigate(`/playbook/play/${idParam}`); }
-    } catch (err) {
-      if (err.status === 409 && (await confirmDialog(`${err.message} Save anyway as a new version on top of theirs?`, { ok: 'Save anyway' }))) return save(true);
-      errToast(err);
-    }
-  };
-  $('#save', el).onclick = () => save();
-  if ($('#del', el)) $('#del', el).onclick = async () => { if (await confirmDialog('Delete this play for everyone?', { danger: true, ok: 'Delete' })) { await api.del(`/api/plays/${idParam}`); ctx.navigate('/playbook'); } };
 }
 
 // ---------- Delivery ----------
@@ -313,7 +296,7 @@ async function installForm(ctx, inst = null) {
   wireAudience(m.root);
 }
 async function install(el, ctx, id) {
-  const i = await api.get(`/api/installs/${id}`);
+  const [i] = await Promise.all([api.get(`/api/installs/${id}`), loadPositions()]);
   const staff = ctx.me.caps.staff;
   const cfg = await api.get('/api/playbook/config');
   ctx.setTitle(i.name);
@@ -334,6 +317,7 @@ async function install(el, ctx, id) {
 const GKEY = 'pm.gameplays.v1';
 async function gameMode(el, ctx) {
   const cfg = await api.get('/api/playbook/config').catch(() => ({ game_mode: 'booth_halftime', game_mode_note: '' }));
+  await loadPositions();
   let plays = [];
   try { plays = await api.get('/api/plays'); try { localStorage.setItem(GKEY, JSON.stringify(plays)); } catch { /* full */ } } catch { try { plays = JSON.parse(localStorage.getItem(GKEY) || '[]'); } catch { plays = []; } }
   set(el, html`<div class="page-head"><div><h1>Playbook</h1><div class="sub">Open a play full screen, move players or draw over it, and show it. Works offline once plays are loaded here.</div></div></div>${staffTabs('game')}
@@ -350,7 +334,7 @@ async function gameMode(el, ctx) {
   };
 }
 function openGame(play, ctx, plays) {
-  const data = JSON.parse(JSON.stringify(play.data));
+  const data = normalizePlay(play.data);
   const g = document.createElement('div');
   g.className = 'gamemode';
   g.innerHTML = `<div class="bar-top"><b>${esc(play.name)}</b><span style="opacity:.6;font-size:12px">${esc(ctx.me.user.name)}</span><span style="flex:1"></span>
@@ -369,13 +353,13 @@ function openGame(play, ctx, plays) {
   setMode('move');
   g.querySelectorAll('[data-m]').forEach((b) => { b.onclick = () => setMode(b.dataset.m); });
   fw.addEventListener('pointerdown', (e) => {
-    const svg = fw.querySelector('svg'); const pt = svgPoint(svg, e);
+    const svg = fw.querySelector('svg'); const pt = flipPt(svgPoint(svg, e), data.view === 'defense');
     fw.setPointerCapture(e.pointerId);
     if (mode === 'draw') { cur = [pt]; strokes.push(cur); return; }
     const t = e.target.closest('[data-player]'); if (t) drag = data.players.find((p) => p.id === t.dataset.player);
   });
   fw.addEventListener('pointermove', (e) => {
-    const svg = fw.querySelector('svg'); if (!svg) return; const pt = svgPoint(svg, e);
+    const svg = fw.querySelector('svg'); if (!svg) return; const pt = flipPt(svgPoint(svg, e), data.view === 'defense');
     if (cur) { cur.push(pt); draw(); } else if (drag) { const dx = pt[0] - drag.x; const dy = pt[1] - drag.y; drag.x = pt[0]; drag.y = pt[1]; drag.path = (drag.path || []).map(([x, y]) => [x + dx, y + dy]); draw(); }
   });
   fw.addEventListener('pointerup', () => { cur = null; drag = null; });

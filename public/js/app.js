@@ -11,9 +11,12 @@ const ROUTES = [
   ['/calendar', 'calendar', 'Calendar'], ['/calendar/:id', 'calendar', 'Event'],
   ['/attendance', 'attendance', 'Attendance'], ['/attendance/reports', 'attendance', 'Attendance reports'], ['/attendance/:id', 'attendance', 'Attendance'],
   ['/practice', 'practice', 'Practice plans'], ['/practice/drills', 'practice', 'Drill library'], ['/practice/:id', 'practice', 'Practice plan'], ['/practice/:id/run', 'practice', 'Run practice'], ['/practice/:id/summary', 'practice', 'Practice summary'],
+  ['/playbook/book/:id', 'playbook', 'Playbook'], ['/playbook/formations', 'formations', 'Formations'], ['/playbook/formation/:id/edit', 'formations', 'Formation designer'],
+  ['/playbook/routes', 'routes', 'Routes'], ['/playbook/route/:id/edit', 'routes', 'Route designer'], ['/playbook/positions', 'pb-positions', 'Positions'], ['/playbook/playcaller', 'playcaller', 'Playcaller mode'],
   ['/playbook', 'playbook', 'Playbook'], ['/playbook/installs', 'playbook', 'Install sheets'], ['/playbook/install/:id', 'playbook', 'Install sheet'], ['/playbook/play/:id', 'playbook', 'Play'], ['/playbook/play/:id/edit', 'playbook', 'Play designer'], ['/playbook/game', 'playbook', 'Game mode'], ['/playbook/shares', 'playbook', 'Delivery'],
   ['/players', 'players', 'Roster'], ['/players/:id', 'players', 'Player'], ['/teams', 'players', 'Teams and groups'], ['/depth', 'depth', 'Depth charts'], ['/depth/:id', 'depth', 'Depth chart'],
   ['/weights', 'weights', 'Weight room'], ['/weights/workout/:a/:w/:d', 'weights', 'Workout'], ['/weights/program/:id', 'weights', 'Lifting program'],
+  ['/weights/station', 'station', 'Station mode'], ['/weights/tv', 'tv', 'TV display'], ['/weights/feed', 'feed', 'Team feed'], ['/weights/wellness', 'wellness', 'Daily check-in'],
   ['/messages', 'messages', 'Messages'], ['/messages/chat/:id', 'messages', 'Chat'], ['/messages/announcements', 'messages', 'Announcements'], ['/messages/announcements/:id', 'messages', 'Announcement'], ['/messages/moderation', 'messages', 'Moderation'],
   ['/equipment', 'equipment', 'Equipment'],
   ['/assignments', 'assignments', 'Assignments'], ['/assignments/:id', 'assignments', 'Assignment'],
@@ -45,6 +48,7 @@ function nav(me) {
     add('/attendance', 'Attendance', 'calendar-check');
     add('/practice', 'Practice', 'clipboard');
     if (c['playbook.view']) add('/playbook', 'Playbook', 'book');
+    if (c['playbook.view']) add('/playbook/playcaller', 'Playcaller', 'play');
     items.push({ sec: 'Roster' });
     add('/players', 'Players', 'users');
     add('/depth', 'Depth charts', 'layers');
@@ -64,6 +68,8 @@ function nav(me) {
       add('/assignments', 'Assignments', 'tasks');
       add('/playbook', 'My plays', 'book');
       add('/weights', 'Weight room', 'dumbbell');
+      add('/weights/wellness', 'Daily check-in', 'check');
+      add('/weights/feed', 'Team feed', 'list');
       add('/checkin', 'Check in', 'qr');
     }
     add('/development', role === 'parent' ? 'Player progress' : 'My progress', 'chart');
@@ -71,6 +77,7 @@ function nav(me) {
     add('/messages', 'Messages', 'chat');
     add('/equipment', role === 'parent' ? 'Equipment' : 'My gear', 'box');
     if (role === 'parent') add('/weights', 'Nutrition', 'dumbbell');
+    if (role === 'parent') add('/weights/feed', 'Team feed', 'list');
     if (role === 'parent') add('/forms', 'Forms', 'clipboard');
     add('/account', 'My account', 'user');
   }

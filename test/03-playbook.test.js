@@ -204,9 +204,13 @@ test('playbooks and formations', async () => {
   assert.equal(f.status, 200);
   assert.ok((await head.get('/api/formations')).body.some((x) => x.name === 'Empty'));
   assert.equal((await player.get('/api/formations')).status, 403);
-  // v2 (PB-6): deleting a playbook deletes the plays inside it
+  // v2 (PB-6): deleting a playbook deletes the plays inside it (move playId out first; later tests use it)
+  const home = t.db.get(`SELECT id FROM playbooks WHERE name='Varsity offense'`).id;
+  await head.put(`/api/plays/${playId}`, { playbook_id: home });
+  const doomed = (await head.post('/api/plays', { name: 'Doomed', playbook_id: b.body.id })).body.id;
   await head.del(`/api/playbooks/${b.body.id}`);
-  assert.equal(t.db.get('SELECT 1 FROM plays WHERE id=?', playId), undefined);
+  assert.equal(t.db.get('SELECT 1 FROM plays WHERE id=?', doomed), undefined);
+  assert.equal(t.db.get('SELECT playbook_id FROM plays WHERE id=?', playId).playbook_id, home);
   const facets = await head.get('/api/playbook/facets');
   assert.ok(facets.body.folders.includes('Quick'));
 });

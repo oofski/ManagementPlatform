@@ -55,7 +55,7 @@ function staffHome(el, ctx, d) {
   // F-13: eligibility count on the dashboard (staff who can see eligibility).
   api.get('/api/fb/eligibility/summary').then((s) => {
     const box = el.querySelector('#fbelig');
-    if (box && (s.not_cleared || s.expiring)) set(box, html`<div class="notice ${s.expired ? 'bad' : 'warn'}">${icon('shield', 14)} ${s.cleared} of ${s.total} athletes cleared to participate · ${s.not_cleared} not cleared${s.expiring ? ` · ${s.expiring} physical(s) expiring soon` : ''}${s.expired ? ` · ${s.expired} expired` : ''}. <a href="/eligibility?status=not_cleared">Review eligibility</a></div>`);
+    if (box && (s.not_cleared || s.expiring)) set(box, html`<div class="notice warn">${icon('shield', 14)}${s.cleared} of ${s.total} athletes cleared to participate · ${s.not_cleared} not cleared${s.expiring ? ` · ${s.expiring} physical(s) expiring soon` : ''}${s.expired ? ` · ${s.expired} expired` : ''}. <a href="/eligibility?status=not_cleared">Review eligibility</a></div>`);
   }).catch(() => {});
 }
 

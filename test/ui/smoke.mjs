@@ -35,14 +35,18 @@ const wa = one(`SELECT id FROM wt_assignments LIMIT 1`).id;
 const staffPages = ['/', '/calendar', '/calendar?view=agenda', `/calendar/${ev}`, '/attendance', `/attendance/${ev}`, '/attendance/reports',
   '/practice', '/practice?tab=templates', '/practice/drills', `/practice/${plan}`, `/practice/${plan}/run`, `/practice/${plan}/summary`,
   '/playbook', `/playbook/play/${play}`, `/playbook/play/${play}/edit`, '/playbook/play/new/edit', '/playbook/installs', `/playbook/install/${inst}`, '/playbook/shares', '/playbook/game',
+  '/playbook/book/1', '/playbook/book/2?side=defense', '/playbook/formations', '/playbook/formations?side=defense', '/playbook/formation/1/edit', '/playbook/formation/new/edit',
+  '/playbook/routes', '/playbook/route/new/edit', '/playbook/positions', '/playbook/positions?side=D', '/playbook/playcaller', '/playbook/playcaller?book=1',
   '/players', `/players/${player}`, '/teams', '/depth', `/depth/${chart}`,
   '/weights', '/weights?tab=programs', `/weights/program/${prog}`, '/weights?tab=exercises', '/weights?tab=testing', `/weights?tab=body&player=${player}`, '/weights?tab=nutrition',
+  '/weights?tab=templates', '/weights?tab=leaderboards', '/weights?tab=wellness', '/weights?tab=reports', '/weights?tab=feed', '/weights?tab=testing&view=day', '/weights?tab=testing&view=composite', '/weights?tab=testing&view=compare',
+  '/weights/station', '/weights/tv', '/weights/feed', '/weights/wellness',
   '/messages', `/messages/chat/${chat}`, '/messages/announcements', '/messages/moderation', '/equipment', '/equipment?tab=outstanding', '/equipment?tab=helmets', '/equipment?tab=inventory', '/equipment?tab=catalog',
   '/assignments', '/assignments?tab=templates', '/assignments?tab=forms', `/assignments/${asn}`,
   '/development', '/development?tab=goals', '/development?tab=evals', `/development/player/${player}`, '/season', `/reports/player/${player}`, '/reports/team',
   '/settings', '/settings/staff', '/settings/audit', '/settings/outbox', '/account', '/settings/integrations', '/settings/integrations?tab=gmail', '/settings/integrations?tab=connection', '/settings/integrations?tab=setup', '/settings/integrations?tab=calendar', '/settings/integrations?tab=sheets', '/settings/integrations?tab=docs'];
 const familyPages = ['/', '/calendar', `/calendar/${ev}`, '/assignments', '/assignments?tab=forms', `/assignments/${asn}`, '/playbook', `/playbook/play/${play}`, '/playbook/installs', `/playbook/install/${inst}`,
-  '/weights', `/weights/workout/${wa}/1/1`, '/development', '/depth', `/depth/${chart}`, '/messages', `/messages/chat/${chat}`, '/messages/announcements', '/messages/moderation', '/equipment', '/checkin', '/account', `/players/${player}`];
+  '/weights', `/weights/workout/${wa}/1/1`, '/weights/feed', '/weights/wellness', '/development', '/depth', `/depth/${chart}`, '/messages', `/messages/chat/${chat}`, '/messages/announcements', '/messages/moderation', '/equipment', '/checkin', '/account', `/players/${player}`];
 
 // Pages a role may legitimately be refused (403 notice is expected, not a crash).
 const expectedDenied = {
@@ -50,6 +54,10 @@ const expectedDenied = {
   coach: ['/weights?tab=body', '/messages/moderation'], trainer: ['/playbook', '/practice/', '/messages/moderation', '/development?tab=evals'],
   ad: ['/weights?tab=body', '/practice/', '/development', '/reports/player/'],
 };
+// v2 football operations pages
+staffPages.push('/eligibility', '/forms', '/safety', '/safety?tab=heat', '/safety?tab=concussion', '/messages/documents', '/messages/digest', '/recruiting', `/recruiting/${player}`);
+familyPages.push('/forms', '/messages/documents', `/recruiting/${player}`, '/join');
+expectedDenied.ad.push('/messages/digest');
 const roles = [['head_coach', head, staffPages], ['coach', coach, staffPages], ['trainer', trainer, staffPages.filter((p) => !p.startsWith('/playbook'))], ['ad', ad, staffPages.filter((p) => !p.startsWith('/playbook'))], ['player', player, familyPages], ['parent', parent, familyPages]];
 
 const browser = await chromium.launch();
@@ -136,12 +144,13 @@ async function flows() {
   await step('design play', async () => {
     await page.goto(base + '/playbook/play/new/edit', { waitUntil: 'networkidle' });
     const box = await page.locator('#fw').boundingBox();
-    await page.click('[data-tool=O]');
-    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.65);
-    await page.click('[data-tool=path]');
-    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.65);
-    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.3);
-    await page.keyboard.press('Enter');
+    // v2 designer: tap a palette tile then the field, turn on Route Mode (Straight), click the player, then route points
+    await page.click('[data-pal=player][data-type=circle_letter]');
+    await page.mouse.click(box.x + box.width * 0.2, box.y + box.height * 0.56);
+    await page.click('[data-rm=straight]');
+    await page.mouse.click(box.x + box.width * 0.2, box.y + box.height * 0.56);
+    await page.mouse.click(box.x + box.width * 0.2, box.y + box.height * 0.3);
+    await page.keyboard.press('Escape');
     await page.fill('#mf [name=name]', 'UI test play');
     await page.click('#save');
     await page.waitForURL(/\/playbook\/play\/\d+$/);

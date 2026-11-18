@@ -359,7 +359,8 @@ export default function strength(ctx) {
     const exercises = (d?.exercises || []).map((x) => {
       const ex = db.get('SELECT name, cues FROM exercises WHERE id=?', Number(x.exercise_id)) || { name: 'Exercise' };
       const mine = gov.filter((g) => g.exercise_id === Number(x.exercise_id) || (g.exercise_id == null && !g.alt_exercise_id));
-      const applied = tok ? mine.find((g) => g.group_token === tok) : null;
+      const covers = (gt) => gt === tok || (String(tok).startsWith('pg:') && gt.startsWith('pos:') && (POS_GROUPS[tok.slice(3)] || []).includes(gt.slice(4)));
+      const applied = tok ? mine.find((g) => covers(g.group_token)) : null;
       return {
         name: applied?.alt_name || ex.name, cues: ex.cues, sets: applied?.sets ?? x.sets, reps: applied?.reps ?? x.reps, pct: applied?.pct ?? x.pct ?? null, rpe: applied?.rpe ?? x.rpe ?? null, rest: x.rest || null, note: applied?.note || x.note || null,
         variants: tok ? [] : mine.map((g) => ({ group: wt.tokenLabel(user.program_id, g.group_token), text: [g.alt_name, g.sets ? `${g.sets} sets` : '', g.reps ? `${g.reps} reps` : '', g.pct ? `${g.pct}%` : '', g.note].filter(Boolean).join(' · ') })),

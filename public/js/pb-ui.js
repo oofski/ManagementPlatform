@@ -1,5 +1,5 @@
 // Playbook v2 UI helpers: right-click (and long-press) context menus, inline rename, and small shared bits.
-import { esc } from './ui.js';
+import { esc, tabs, errToast } from './ui.js';
 
 let open = null;
 export function closeMenu() { if (open) { open.remove(); open = null; document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', keyClose, true); } }
@@ -61,7 +61,7 @@ export function inlineRename(node, current, onSave) {
   const finish = async (save) => {
     if (done) return; done = true;
     const v = inp.value.trim();
-    if (save && v && v !== current) { try { await onSave(v); node.textContent = v; return; } catch (e) { node.innerHTML = old; throw e; } }
+    if (save && v && v !== current) { try { await onSave(v); node.textContent = v; return; } catch (e) { node.innerHTML = old; errToast(e); return; } }
     node.innerHTML = old;
   };
   inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(true); } if (e.key === 'Escape') { e.preventDefault(); finish(false); } e.stopPropagation(); });
@@ -71,3 +71,7 @@ export function inlineRename(node, current, onSave) {
 }
 
 export const sideLabel = { offense: 'Offense', defense: 'Defense', special: 'Special teams' };
+
+// Tabs shared by the staff playbook pages.
+export const pbTabs = (active) => tabs([['books', 'Playbooks', '/playbook'], ['formations', 'Formations', '/playbook/formations'], ['routes', 'Routes', '/playbook/routes'],
+  ['positions', 'Positions', '/playbook/positions'], ['installs', 'Install sheets', '/playbook/installs'], ['shares', 'Delivery', '/playbook/shares'], ['game', 'Game mode', '/playbook/game']], active);
