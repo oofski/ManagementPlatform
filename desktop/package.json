@@ -1,0 +1,47 @@
+{
+  "name": "program-manager-desktop",
+  "productName": "Program Manager",
+  "version": "1.0.0",
+  "description": "Program Manager for Windows: run your football program from the desktop.",
+  "author": "Program Manager",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64",
+    "dist:linux-host": "electron-builder --win --x64 -c.win.signAndEditExecutable=false",
+    "release": "electron-builder --win --x64 --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.6.2"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "app.programmanager.desktop",
+    "productName": "Program Manager",
+    "artifactName": "ProgramManager-Setup-${version}.${ext}",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "preload.js", "setup.html", "build/icon.png"],
+    "extraResources": [
+      { "from": "../server", "to": "server" },
+      { "from": "../public", "to": "public" },
+      { "from": "../package.json", "to": "package.json" }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Program Manager"
+    },
+    "publish": [{ "provider": "github", "owner": "oofski", "repo": "ManagementPlatform", "releaseType": "release" }]
+  }
+}

@@ -1,0 +1,37 @@
+# Builds the Windows installer on a real Windows machine and publishes it as a GitHub Release.
+# The installed app checks these releases and updates itself.
+# Release a new version: bump "version" in desktop/package.json, commit, then either push a tag
+# (git tag v1.0.1 && git push origin v1.0.1) or run this workflow from the Actions tab.
+name: Desktop release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run the app's tests
+        run: npm test
+      - name: Install desktop build tools
+        working-directory: desktop
+        run: npm ci
+      - name: Build installer and publish release
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --x64 --publish always
+      - name: Keep a copy of the installer with this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProgramManager-Setup
+          path: desktop/dist/*.exe
