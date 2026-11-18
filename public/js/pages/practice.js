@@ -135,6 +135,7 @@ async function editor(el, ctx, id) {
     <div class="actions"><a class="btn" href="/practice">Back</a><button onclick="window.print()">Print</button>
       ${!plan.is_template ? html`<a class="btn" href="/practice/${id}/summary">Summary</a><a class="btn" href="/practice/${id}/run">Run mode</a>` : ''}
       ${edit ? html`<button id="tpl">Save as template</button><button class="danger" id="del">Delete</button><button class="primary" id="save">Save plan</button>` : ''}</div></div>
+    <div id="fbheat"></div>
     <div class="card" style="margin-bottom:14px"><div class="bd"><div class="fields">
       ${field('Plan name', html`<input id="pname" value="${plan.name}" ${edit ? '' : raw('disabled')}>`)}
       ${field('Start time', html`<input type="time" id="pstart" value="${plan.start_time || ''}" ${edit ? '' : raw('disabled')}>`)}
@@ -146,6 +147,8 @@ async function editor(el, ctx, id) {
       <div class="card"><div class="hd"><h2>Ratings</h2><span class="r faint" style="font-size:12px">${plan.ratings.length}</span></div>${plan.ratings.length ? html`<div class="bd flush tbl-wrap" style="max-height:340px;overflow-y:auto"><table><thead><tr><th>Player</th><th class="num">Rating</th><th>Coach</th></tr></thead><tbody>${plan.ratings.slice(0, 80).map((r) => html`<tr><td>${r.player_name}</td><td class="num">${r.value}</td><td>${r.coach_name}</td></tr>`)}</tbody></table></div>` : empty(ctx.me.caps['ratings.view'] ? 'No ratings yet.' : 'Ratings are visible to coaches.')}</div>
     </div>` : ''}`);
   draw();
+  // F-11: heat-acclimatization banner when this day's plan goes over the state schedule.
+  if (!plan.is_template) import('./safety.js').then(async (m) => set($('#fbheat', el), m.heatBanner(await api.get(`/api/fb/heat/check?plan_id=${id}`)))).catch(() => {});
   const pe = $('#periods', el);
   pe.addEventListener('change', (e) => {
     const tr = e.target.closest('tr[data-i]'); if (!tr) return;
@@ -173,6 +176,7 @@ const TAGS = ['went well', 'needs work', 'injury concern', 'effort', 'technique'
 async function run(el, ctx, id) {
   const plan = await api.get(`/api/plans/${id}`);
   ctx.setTitle(`Run: ${plan.name}`);
+  const heat = await api.get(`/api/fb/heat/check?plan_id=${id}`).catch(() => null); // F-11
   const scale = ctx.me.settings.rating_scale || 5;
   const canRate = ctx.me.caps['ratings.edit'];
   let idx = Math.max(0, plan.periods.findIndex((p) => p.status === 'pending'));
@@ -190,6 +194,7 @@ async function run(el, ctx, id) {
     for (const r of roster) if (myRatings[`${p.id}:${r.id}`] === undefined && r.my_rating != null) myRatings[`${p.id}:${r.id}`] = r.my_rating;
     set(el, html`<div class="page-head"><div><h1>${plan.name}</h1><div class="sub">Period ${idx + 1} of ${plan.periods.length}</div></div>
       <div class="actions"><a class="btn" href="/practice/${id}">Edit plan</a><a class="btn" href="/practice/${id}/summary">Summary</a></div></div>
+      ${heat ? (await import('./safety.js')).heatBanner(heat) : ''}
       <div class="grid g-side">
         <div class="stack">
           <div class="card"><div class="bd">
@@ -208,7 +213,7 @@ async function run(el, ctx, id) {
           </div><div class="ft muted">${next ? html`Next: <b>${fmtHM(next.start_time)} ${next.drill_name || next.group_label || 'Period'}</b> · ${next.duration} min · ${next.location || ''}` : 'Last period'}</div></div>
           <div class="card"><div class="hd"><h2>${canRate ? 'Rate players' : 'Players in this period'}</h2><span class="r faint" style="font-size:12px">${roster.length} in group · tap to rate 1–${scale}, only the ones who stood out</span></div><div class="bd">
             ${roster.length ? html`<div class="tap-grid">${roster.map((r) => html`<div class="tap ${r.flagged ? 'flag' : ''}" data-pid="${r.id}">
-              <div class="who"><b>${r.jersey != null ? `#${r.jersey} ` : ''}${r.name}</b><span>${r.positions.join('/')} · ${r.units.map((u) => UNIT[u]).join(', ')} · ${r.level || ''}${r.availability !== 'available' ? ` · ${cap(r.availability)}` : ''}${['excused', 'unexcused'].includes(r.attendance) ? ' · absent' : ''}</span></div>
+              <div class="who"><b>${r.jersey != null ? `#${r.jersey} ` : ''}${r.name}</b><span>${r.positions.join('/')} · ${r.units.map((u) => UNIT[u]).join(', ')} · ${r.level || ''}${['excused', 'unexcused'].includes(r.attendance) ? ' · absent' : ''}</span>${['limited', 'out'].includes(r.availability) ? html` ${availBadge(r.availability)}` : ''}</div>
               ${canRate ? html`<div class="rate">${Array.from({ length: scale }, (_, i) => html`<button class="${myRatings[`${p.id}:${r.id}`] === i + 1 ? 'on' : ''}" data-rate="${i + 1}">${i + 1}</button>`)}</div>` : ''}
               <button class="sm ghost" data-note-player="${r.id}" title="Note">✎</button>
             </div>`)}</div>` : empty('No players match this period’s group.')}

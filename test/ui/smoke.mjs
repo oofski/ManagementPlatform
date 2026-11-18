@@ -40,7 +40,7 @@ const staffPages = ['/', '/calendar', '/calendar?view=agenda', `/calendar/${ev}`
   '/messages', `/messages/chat/${chat}`, '/messages/announcements', '/messages/moderation', '/equipment', '/equipment?tab=outstanding', '/equipment?tab=helmets', '/equipment?tab=inventory', '/equipment?tab=catalog',
   '/assignments', '/assignments?tab=templates', '/assignments?tab=forms', `/assignments/${asn}`,
   '/development', '/development?tab=goals', '/development?tab=evals', `/development/player/${player}`, '/season', `/reports/player/${player}`, '/reports/team',
-  '/settings', '/settings/staff', '/settings/audit', '/settings/outbox', '/account', '/settings/integrations', '/settings/integrations?tab=gmail'];
+  '/settings', '/settings/staff', '/settings/audit', '/settings/outbox', '/account', '/settings/integrations', '/settings/integrations?tab=gmail', '/settings/integrations?tab=connection', '/settings/integrations?tab=setup', '/settings/integrations?tab=calendar', '/settings/integrations?tab=sheets', '/settings/integrations?tab=docs'];
 const familyPages = ['/', '/calendar', `/calendar/${ev}`, '/assignments', '/assignments?tab=forms', `/assignments/${asn}`, '/playbook', `/playbook/play/${play}`, '/playbook/installs', `/playbook/install/${inst}`,
   '/weights', `/weights/workout/${wa}/1/1`, '/development', '/depth', `/depth/${chart}`, '/messages', `/messages/chat/${chat}`, '/messages/announcements', '/messages/moderation', '/equipment', '/checkin', '/account', `/players/${player}`];
 

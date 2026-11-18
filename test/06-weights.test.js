@@ -59,7 +59,8 @@ test('loads are computed from % of the latest tested max', async () => {
   assert.equal(w.status, 200);
   const sq = w.body.exercises.find((x) => x.original_exercise_id === ex['Back squat']);
   assert.equal(sq.tested_max, squatMax);
-  assert.equal(sq.load, round5(0.8 * squatMax));
+  // C-15 (v2): a training max recorded after the latest test raises the max used for loads
+  assert.equal(sq.load, round5(0.8 * (sq.training_max ?? squatMax)));
   const rdl = w.body.exercises.find((x) => x.original_exercise_id === ex['Romanian deadlift']);
   assert.equal(rdl.load, null, 'no % means no computed load');
   assert.equal(w.body.prescribed_sets, 4);
@@ -147,9 +148,14 @@ test('testing days and personal records', async () => {
 
 test('body weight is private to the player, parents and granted staff', async () => {
   const other = t.varsity('u.id!=?', player.id)[0];
+  // F-8 (v2): coach-only by default; the head coach can open it to players and parents.
+  assert.equal((await player.get(`/api/bodyweight/${player.id}`)).status, 403);
+  assert.equal((await parent.get(`/api/bodyweight/${player.id}`)).status, 403);
+  await t.setSettings({ family_sees_bodyweight: true });
   const own = await player.get(`/api/bodyweight/${player.id}`);
   assert.equal(own.status, 200);
   assert.ok(own.body.length >= 4);
+  assert.ok(own.body.every((m) => m.kind === 'bodyweight'), 'families never see testing-day weights');
   assert.equal((await player.get(`/api/bodyweight/${other.id}`)).status, 403);
   assert.equal((await parent.get(`/api/bodyweight/${player.id}`)).status, 200);
   assert.equal((await parent.get(`/api/bodyweight/${other.id}`)).status, 403);
@@ -167,6 +173,9 @@ test('body weight is private to the player, parents and granted staff', async ()
   assert.equal((await trainer.post('/api/bodyweight', { value: 202, player_id: player.id })).status, 200);
   // never on the leaderboard
   assert.equal((await player.get('/api/leaderboard?test_key=bodyweight')).status, 400);
+  assert.equal((await player.get('/api/leaderboard?test_key=weight')).status, 400);
+  await t.setSettings({ family_sees_bodyweight: false });
+  assert.equal((await parent.get(`/api/bodyweight/${player.id}`)).status, 403);
 });
 
 let planId;

@@ -2,6 +2,30 @@
 import { api } from '../api.js';
 import { html, set, $, on, toast, errToast, formData, ROLE } from '../ui.js';
 import { signedIn } from '../app.js';
+import { googleButton, cleverButton, isDesktop, desktopHandoff } from '../sso.js';
+
+// Messages for ?sso_error= after school sign-in (codes come from server/google/sso.js).
+const SSO_ERRORS = {
+  state: 'The sign-in link expired or was opened in a different browser. Try again.',
+  access_denied: 'Sign-in was cancelled.',
+  exchange: 'The sign-in could not be completed. Try again.',
+  unverified: 'That account does not have a verified email address.',
+  domain: 'Use your school Google account to sign in.',
+  no_account: 'No Program Manager account uses this email address. Ask your head coach to add you with this address, then sign in again.',
+  archived: 'This account is no longer on the roster.',
+  not_configured: 'School sign-in is not set up for this program.',
+};
+function ssoSection(prov) {
+  const programs = new Map();
+  for (const k of ['google', 'clever']) for (const p of prov[k] || []) programs.set(p.id, p.name);
+  if (!programs.size) return '';
+  return html`<div class="or-line"><span>or</span></div>
+    ${programs.size > 1 ? html`<div class="field"><label for="sso-prog">Program</label><select id="sso-prog">${[...programs].map(([id, n]) => html`<option value="${id}">${n}</option>`)}</select></div>` : ''}
+    <div class="sso-buttons">
+      ${(prov.google || []).length ? googleButton('Continue with Google', 'data-sso="google"') : ''}
+      ${(prov.clever || []).length ? cleverButton('Continue with Clever', 'data-sso="clever"') : ''}
+    </div>`;
+}
 
 const frame = (inner) => set($('#app'), html`<div class="auth"><div class="box">
   <div class="brandline"><div class="mark">R</div><div><b>Program Manager</b><div class="muted" style="font-size:12px">Football program operations</div></div></div>
@@ -10,20 +34,24 @@ const frame = (inner) => set($('#app'), html`<div class="auth"><div class="box">
 export async function login() {
   document.title = 'Sign in · Program Manager';
   let demo = [];
-  try { demo = await api.get('/api/auth/demo-users'); } catch { /* not in dev */ }
+  let prov = {};
+  [demo, prov] = await Promise.all([api.get('/api/auth/demo-users').catch(() => []), api.get('/api/auth/sso/providers').catch(() => ({}))]);
+  const qs = new URLSearchParams(location.search);
+  const ssoErr = qs.get('sso_error');
+  const ssoMsg = ssoErr ? `${SSO_ERRORS[ssoErr] || 'School sign-in failed.'}${ssoErr === 'no_account' && qs.get('email') ? ` (${qs.get('email')})` : ''}` : '';
+  if (ssoErr) history.replaceState({}, '', '/');
   const groups = {};
   for (const u of demo) (groups[u.role] ||= []).push(u);
   frame(html`<div class="card"><div class="bd">
     <h1 style="margin-bottom:12px">Sign in</h1>
+    ${ssoMsg ? html`<div class="notice bad">${ssoMsg}</div>` : ''}
     <form id="f">
-      <div class="field"><label for="em">Email</label><input id="em" name="email" type="email" autocomplete="username" required></div>
+      <div class="field"><label for="em">Email or username</label><input id="em" name="email" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>
       <div class="field"><label for="pw">Password</label><input id="pw" name="password" type="password" autocomplete="current-password" required></div>
       <button class="primary" style="width:100%;justify-content:center">Sign in</button>
     </form>
-    <div class="row" style="margin-top:10px">
-      <button class="sm" data-sso="google" style="flex:1;justify-content:center">School Google account</button>
-      <button class="sm" data-sso="microsoft" style="flex:1;justify-content:center">School Microsoft account</button>
-    </div>
+    ${ssoSection(prov)}
+    <p class="muted" style="font-size:12.5px;margin:12px 0 0">New athlete with a team code? <a href="/join">Join your team</a></p>
   </div></div>
   ${demo.length ? html`<div class="card" style="margin-top:14px"><div class="hd"><h3>Demo accounts</h3><span class="r faint" style="font-size:12px">password123</span></div><div class="bd">
     <p class="muted" style="font-size:12.5px">Sign in as any role to try the app. Quick picks:</p>
@@ -43,7 +71,23 @@ export async function login() {
       await signedIn();
     } catch (err) { errToast(err); }
   };
-  on(app, 'click', '[data-sso]', async (e, b) => { try { await api.post('/api/auth/sso', { provider: b.dataset.sso }); } catch (err) { toast(err.message, 'warn'); } });
+  on(app, 'click', '[data-sso]', async (e, b) => {
+    const provider = b.dataset.sso;
+    const sel = $('#sso-prog');
+    const body = sel ? { program_id: Number(sel.value) } : {};
+    b.disabled = true;
+    try {
+      if (isDesktop()) {
+        // Google does not allow sign-in inside an app window: finish in the browser, then come back.
+        const r = await desktopHandoff(() => api.post(`/api/auth/sso/${provider}/start`, { ...body, desktop: true }), { title: 'Sign in with your browser', what: 'sign in' });
+        if (!r) return;
+        if (r.twofa) return verify();
+        return await signedIn();
+      }
+      const r = await api.post(`/api/auth/sso/${provider}/start`, body);
+      location.href = r.url;
+    } catch (err) { toast(err.message, 'bad'); } finally { b.disabled = false; }
+  });
   on(app, 'click', '[data-demo]', async (e, b) => {
     let id = Number(b.dataset.demo);
     if (b.dataset.role === 'player' || b.dataset.role === 'parent') {

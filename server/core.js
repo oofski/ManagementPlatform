@@ -46,6 +46,7 @@ export const DEFAULT_SETTINGS = {
   reminder_defaults: [1440, 120],
   coach_playbook: 'edit',          // none | view | edit
   coach_export_plays: false,
+  formation_limit: null,           // FM-3: saved formations per program: 25 | 250 | null (unlimited)
   trainer_playbook: false,
   trainer_ratings: false,
   staff_access: 'view',            // what "other staff" can see: view | none
@@ -67,6 +68,31 @@ export const DEFAULT_SETTINGS = {
   // Google integration: deliver the email outbox through this staff member's connected Gmail (null = simulated).
   gmail_send_user_id: null,
   gmail_send_after_id: null,       // only outbox rows queued after sending was turned on are delivered
+  // F-11: heat acclimatization. Day 1 is the first practice of the acclimatization period. Data-driven per state.
+  heat_start_date: null,
+  heat_schedule: [
+    { from: 1, to: 2, equipment: 'helmet', max_practices: 1, max_minutes: 180, contact: false, note: 'Helmets only, one practice a day, up to 3 hours' },
+    { from: 3, to: 5, equipment: 'shells', max_practices: 1, max_minutes: 180, contact: false, note: 'Helmets and shoulder pads, one practice a day, up to 3 hours' },
+    { from: 6, to: 14, equipment: 'full', max_practices: 2, max_minutes: 300, contact: true, note: 'Full pads; double sessions up to 5 hours total, not on consecutive days' },
+  ],
+  heat_limits: { heat_index: { caution: 95, stop: 104 }, wbgt: { caution: 82, stop: 92 } },
+  // F-13: warn this many days before a physical expires.
+  physical_warn_days: 30,
+  // F-17: weekly parent digest by email (day 0 = Sunday).
+  parent_digest: true,
+  digest_day: 0,
+  digest_time: '17:00',
+  // v2 weight room: body weight stays coach-only unless the head coach opens it to players and parents (F-8);
+  // leaderboard scopes hidden from players, as tokens like "team:3" or "group:OL" (C-16);
+  // the scheduled weekly weight-room email (C-22, day 0 = Sunday).
+  family_sees_bodyweight: false,
+  leaderboard_hidden: [],
+  weekly_report_enabled: false,
+  weekly_report_weekday: 1,
+  weekly_report_hour: 7,
+  weekly_report_athlete: true,
+  weekly_report_parent: true,
+  weekly_report_ad: true,
   // CAL-5: standard game week. day = offset from Monday of game week.
   game_week_template: [
     { day: 0, type: 'film', title: 'Film: scout report', start: '15:15', end: '16:00', location: 'Film room' },
@@ -121,6 +147,11 @@ export function createCore(db) {
       case 'messages.send': return u.role === 'coach' || u.role === 'trainer' || !!p.messages;
       case 'assignments.edit': return u.role === 'coach';
       case 'season.view': return u.role === 'coach' || u.role === 'trainer' || !!p.development;
+      case 'eligibility.edit': return u.role === 'coach' || u.role === 'trainer' || !!p.eligibility || !!p.medical;
+      case 'heat.log': return u.role === 'coach' || u.role === 'trainer' || !!p.medical;
+      // Medical detail (concussion notes, stage sign-off) — trainers or staff given the medical permission.
+      // Admins pass every can() check; football.js uses its own isMedical() so head coaches do not read medical notes.
+      case 'medical': return u.role === 'trainer' || !!p.medical;
       default: return false;
     }
   }

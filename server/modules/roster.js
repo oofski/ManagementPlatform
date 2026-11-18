@@ -3,6 +3,8 @@
 import { fail, need, token, nowLocal, today } from '../core.js';
 import { j, jAll } from '../db.js';
 import { csv, csvResponse } from '../app.js';
+import { normalizeImportRow, linkImportedParents } from './fb-roster.js';
+import { archiveSeason } from './football.js';
 
 export default function roster({ router, db, core }) {
   const { can, isStaff, isAdmin, audit, notify } = core;
@@ -26,7 +28,8 @@ export default function roster({ router, db, core }) {
     const out = {
       id: r.user_id || r.id, name: r.name, jersey: r.jersey, class_year: r.class_year, photo: r.photo,
       team_id: r.team_id, team: team ? (team.name === team.level_name ? team.name : `${team.level_name} ${team.name}`) : null, level_id: team?.level_id, level: team?.level_name,
-      units: r.units, positions: r.positions, availability: r.availability, avail_note: null, return_date: r.return_date,
+      units: r.units, positions: r.positions, primary_group: r.primary_group || r.positions[0] || null,
+      availability: r.availability, avail_note: null, return_date: r.return_date,
       archived: !!r.archived, joined: !!r.joined_at, pending_invite: !!r.invite_code,
     };
     const self = core.linkedPlayers(viewer).includes(out.id);
@@ -159,6 +162,8 @@ export default function roster({ router, db, core }) {
     if (b.jersey !== undefined) fields.jersey = b.jersey === '' || b.jersey === null ? null : Number(b.jersey);
     if (b.units) { need(b.units.every((x) => ['offense', 'defense', 'special'].includes(x)), 400, 'Unknown unit'); fields.units = b.units; }
     if (b.positions) fields.positions = b.positions.map((x) => String(x).toUpperCase());
+    // C-2: one primary position group per athlete (defaults to the first position).
+    if (b.primary_group !== undefined) fields.primary_group = b.primary_group ? String(b.primary_group).toUpperCase() : null;
     if (existingId) {
       if (Object.keys(fields).length) db.update('player_profiles', existingId, fields, 'user_id');
       if (b.name) db.update('users', existingId, { name: b.name });
@@ -205,15 +210,17 @@ export default function roster({ router, db, core }) {
       const x = String(s).toLowerCase().trim();
       return teams.find((t) => `${t.lname} ${t.name}`.toLowerCase() === x || t.lname.toLowerCase() === x || t.name.toLowerCase() === x)?.id ?? null;
     };
-    const results = { created: 0, errors: [] };
+    const results = { created: 0, parents: 0, errors: [] };
+    const posRows = db.all('SELECT code, unit FROM positions WHERE program_id=?', user.program_id);
     db.tx(() => {
       rows.forEach((r, i) => {
         try {
-          const units = String(r.units || '').toLowerCase().split(/[ ,;/]+/).filter(Boolean).map((u) => (u.startsWith('spec') || u === 'st' ? 'special' : u.startsWith('off') ? 'offense' : u.startsWith('def') ? 'defense' : u)).filter((u) => ['offense', 'defense', 'special'].includes(u));
-          const positions = String(r.positions || '').split(/[ ,;/]+/).filter(Boolean);
-          const id = upsertPlayer(user, { name: r.name, email: r.email || null, jersey: r.jersey || null, class_year: r.class_year ? Number(r.class_year) : null, hand: r.hand || null, team_id: findTeam(r.team), units, positions });
+          // C-1: grade or class year, a single position column, parent contacts (fb-roster.js).
+          const x = normalizeImportRow(r, posRows);
+          const id = upsertPlayer(user, { name: x.name, email: r.email || null, jersey: r.jersey || null, class_year: x.class_year, hand: r.hand || null, team_id: findTeam(r.team), units: x.units, positions: x.positions, primary_group: x.primary_group });
           measure(user, id, { height: r.height, weight: r.weight });
           results.created++;
+          try { results.parents += linkImportedParents(db, user, id, x.parents); } catch (e) { results.errors.push({ row: i + 1, error: `Player added; parent contact skipped: ${e.message}` }); }
         } catch (e) { results.errors.push({ row: i + 1, error: e.message }); }
       });
       if (results.errors.length && body.all_or_nothing) throw new Error('rollback');
@@ -253,7 +260,10 @@ export default function roster({ router, db, core }) {
     need(can(user, 'availability.edit'), 403, 'Only trainers and coaches set availability');
     const id = Number(params.id);
     need(playerOf(user.program_id, id), 404, 'Player not found');
-    need(['available', 'limited', 'out'].includes(body.availability), 400, 'Status must be available, limited or out');
+    // F-10: full (stored as 'available'), limited, out, cleared. A player in concussion protocol stays out (F-12).
+    if (body.availability === 'full') body.availability = 'available';
+    need(['available', 'limited', 'out', 'cleared'].includes(body.availability), 400, 'Status must be full, limited, out or cleared');
+    need(body.availability === 'out' || !db.get(`SELECT 1 FROM fb_concussions WHERE player_id=? AND status='active'`, id), 400, 'This player is in the concussion return-to-play protocol and stays out until the final stage is signed off');
     db.update('player_profiles', id, { availability: body.availability, avail_note: body.note || null, return_date: body.return_date || null, avail_updated_by: user.id, avail_updated_at: nowLocal() }, 'user_id');
     audit(user, 'set_availability', 'player', id, { availability: body.availability, return_date: body.return_date });
     const name = db.get('SELECT name FROM users WHERE id=?', id).name;
@@ -294,8 +304,10 @@ export default function roster({ router, db, core }) {
     need(isAdmin(user), 403, 'Head coach only');
     const moves = body.moves || []; // [{player_id, team_id}]
     const grad = Number(body.graduating_class || 0);
-    let moved = 0; let archived = 0;
+    let moved = 0; let archived = 0; let snapshot = null;
     db.tx(() => {
+      // C-24: snapshot this season's results per athlete before anyone moves or graduates (football.js).
+      snapshot = archiveSeason(db, core, user, { graduating_class: grad, new_season: body.new_season });
       for (const m of moves) { if (playerOf(user.program_id, m.player_id) && teamOf(user.program_id, m.team_id)) { db.update('player_profiles', m.player_id, { team_id: m.team_id }, 'user_id'); moved++; } }
       if (grad) {
         const ids = db.all(`SELECT user_id FROM player_profiles WHERE class_year<=? AND archived=0 AND user_id IN (SELECT id FROM users WHERE program_id=?)`, grad, user.program_id).map((r) => r.user_id);
@@ -309,8 +321,8 @@ export default function roster({ router, db, core }) {
         archived = ids.length;
       }
     });
-    audit(user, 'season_rollover', 'roster', null, { moved, archived });
-    return { moved, archived };
+    audit(user, 'season_rollover', 'roster', null, { moved, archived, snapshot });
+    return { moved, archived, snapshot };
   });
   router.post('/api/players/:id/invite', ({ user, params }) => {
     need(can(user, 'roster.edit'), 403, 'Coaches only');

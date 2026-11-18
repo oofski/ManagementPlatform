@@ -137,7 +137,8 @@ export const initials = (n) => String(n || '?').split(/\s+/).map((x) => x[0]).sl
 export const avatar = (name, photo, cls = '') => html`<span class="av ${cls}">${photo ? html`<img src="${photo}" alt="">` : initials(name)}</span>`;
 export function availBadge(a) {
   if (!a) return '';
-  return html`<span class="badge ${a === 'available' ? 'ok' : a === 'limited' ? 'warn' : 'bad'}">${cap(a)}</span>`;
+  // F-10: full (stored as 'available'), limited, out, cleared (back after injury or protocol).
+  return html`<span class="badge ${a === 'available' || a === 'cleared' ? 'ok' : a === 'limited' ? 'warn' : 'bad'}">${a === 'available' ? 'Full' : cap(a)}</span>`;
 }
 const ST = { present: 'ok', late: 'warn', left_early: 'warn', excused: 'blue', unexcused: 'bad', going: 'ok', not_going: 'bad', maybe: 'warn', completed: 'ok', in_progress: 'blue', not_started: '', late_asn: 'bad', scheduled: '', indoors: 'blue', delayed: 'warn', cancelled: 'bad', done: 'ok', skipped: '', changed: 'warn', pending: '' };
 export const statusBadge = (s, label) => html`<span class="badge ${ST[s] ?? ''}">${label || cap(s === 'not_going' ? 'not going' : s)}</span>`;

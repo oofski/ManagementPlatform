@@ -5,9 +5,11 @@ import { j, jAll } from '../db.js';
 
 export const CAPS = ['admin', 'staff', 'calendar.edit', 'roster.edit', 'availability.edit', 'practice.edit', 'ratings.view', 'ratings.edit',
   'playbook.view', 'playbook.edit', 'playbook.export', 'depth.edit', 'equipment.manage', 'equipment.view', 'weights.edit',
-  'nutrition.approve', 'body.view', 'chats.read_all', 'audit.view', 'messages.send', 'assignments.edit', 'season.view'];
+  'nutrition.approve', 'body.view', 'chats.read_all', 'audit.view', 'messages.send', 'assignments.edit', 'season.view',
+  'eligibility.edit', 'heat.log'];
 
-export default function auth({ router, db, core, dev }) {
+export default function auth(ctx) {
+  const { router, db, core, dev } = ctx;
   const { can, isStaff, isAdmin, audit, notify } = core;
   const setCookie = (res, sid) => {
     res.headers['Set-Cookie'] = `sid=${sid}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}`;
@@ -24,7 +26,9 @@ export default function auth({ router, db, core, dev }) {
   const needsTwoFa = (u) => isStaff(u) && (core.settings(u.program_id).staff_twofa || u.twofa);
 
   router.post('/api/auth/login', ({ body, res }) => {
-    const u = db.get('SELECT * FROM users WHERE lower(email)=lower(?) AND active=1', body.email || '');
+    // C-4: athletes without a personal email sign in with the username they chose at /join.
+    const login = String(body.email || body.username || '').trim();
+    const u = db.get('SELECT * FROM users WHERE (lower(email)=lower(?) OR lower(username)=lower(?)) AND active=1', login, login);
     if (!u || !checkPassword(body.password || '', u.password_hash)) fail(401, 'Email or password is incorrect');
     // Access ends when a player leaves the roster (SEC-9): archived players cannot sign back in.
     if (u.role === 'player' && db.get('SELECT archived FROM player_profiles WHERE user_id=?', u.id)?.archived) fail(401, 'This account is no longer on the roster');
@@ -56,9 +60,18 @@ export default function auth({ router, db, core, dev }) {
     return { ok: true };
   }, { unverified: true });
 
-  router.post('/api/auth/sso', ({ body }) => {
-    fail(501, `Sign-in with ${body.provider === 'microsoft' ? 'Microsoft' : 'Google'} needs the school's OAuth client to be configured by an administrator (Settings > Sign-in). Use email and password until then.`);
-  }, { auth: false });
+  // School sign-in (Google, Clever) lives in server/google/sso.js; it signs people in through this helper so the
+  // same rules apply as for a password sign-in (archived players are refused, staff two-step still applies).
+  ctx.auth = {
+    signIn(u, res, method) {
+      if (u.role === 'player' && db.get('SELECT archived FROM player_profiles WHERE user_id=?', u.id)?.archived) fail(401, 'This account is no longer on the roster');
+      const two = needsTwoFa(u);
+      const sid = newSession(u, !two);
+      if (res) setCookie(res, sid);
+      audit(u, 'sign_in', 'user', u.id, { twofa: two, method });
+      return { ok: true, twofa: two, token: sid };
+    },
+  };
 
   // Demo sign-in (development only): pick any seeded account.
   router.get('/api/auth/demo-users', () => {

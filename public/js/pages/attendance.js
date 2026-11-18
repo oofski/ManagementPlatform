@@ -3,7 +3,8 @@
 import { api } from '../api.js';
 import { html, set, $, $$, on, modal, toast, errToast, options, checked, fmtDT, fmtTime, fmtDate, ago, cap, empty, statusBadge, availBadge, bar, pct, todayISO, addDaysISO, UNIT, tabs, nowISO, esc } from '../ui.js';
 
-const ST = [['present', 'Present'], ['late', 'Late'], ['left_early', 'Left early'], ['excused', 'Excused'], ['unexcused', 'Unexcused']];
+// C-19: the stored 'late' status reads as Tardy and 'unexcused' as Absent.
+const ST = [['present', 'Present'], ['late', 'Tardy'], ['left_early', 'Left early'], ['excused', 'Excused'], ['unexcused', 'Absent']];
 const atabs = (a) => tabs([['events', 'Events', '/attendance'], ['reports', 'History and reports', '/attendance/reports']], a);
 
 export default async function attendance(el, ctx) {
@@ -38,11 +39,11 @@ async function sheet(el, ctx, id) {
     const c = data.counts;
     const isPlanned = (p) => p.attendance && !p.attendance.confirmed;
     set(el, html`<div class="page-head"><div><h1>${data.event.title}</h1><div class="sub">${fmtDT(data.event.start)} · ${data.event.location || ''}</div></div>
-      <div class="actions"><a class="btn" href="/attendance">Events</a><a class="btn" href="/calendar/${id}">Event</a><button id="code">${data.code ? `Check-in code: ${data.code.code}` : 'Show check-in code'}</button><button class="primary" id="all">Mark all present</button></div></div>
+      <div class="actions"><a class="btn" href="/attendance">Events</a><a class="btn" href="/calendar/${id}">Event</a><button id="fbkiosk">Tablet kiosk</button><button id="code">${data.code ? `Check-in code: ${data.code.code}` : 'Show check-in code'}</button><button class="primary" id="all">Mark all present</button></div></div>
       ${data.conflicts ? html`<div class="notice warn">${data.conflicts} offline change(s) for this event conflict with newer edits. <a href="/attendance">Review</a></div>` : ''}
       <div class="grid g4" style="margin-bottom:12px">
         <div class="card stat"><div class="k">Present</div><div class="v" style="color:var(--ok)">${c.present + c.left_early}</div><div class="d">of ${c.expected} expected</div></div>
-        <div class="card stat"><div class="k">Late</div><div class="v" style="color:var(--warn)">${c.late}</div></div>
+        <div class="card stat"><div class="k">Tardy</div><div class="v" style="color:var(--warn)">${c.late}</div></div>
         <div class="card stat"><div class="k">Not checked in</div><div class="v">${c.not_checked_in}</div><div class="d">${c.planned_absent} planned absence(s) to confirm</div></div>
         <div class="card stat"><div class="k">Absent</div><div class="v" style="color:var(--bad)">${c.excused + c.unexcused}</div><div class="d">${c.excused} excused · ${c.unexcused} unexcused · ${c.unavailable} limited/out</div></div>
       </div>
@@ -94,6 +95,7 @@ async function sheet(el, ctx, id) {
     const ids = data.players.filter((p) => !p.attendance).map((p) => p.id);
     try { const r = await api.post(`/api/attendance/${id}/all-present`, { player_ids: ids }, { offline: true }); toast(r.queued ? 'Saved offline' : `${r.marked} marked present. Now change the exceptions.`); refresh(); } catch (err) { errToast(err); }
   });
+  on(el, 'click', '#fbkiosk', async () => (await import('./fb-attendance.js')).startKiosk(ctx, id));
   on(el, 'click', '#confirm', async () => { const r = await api.post(`/api/attendance/${id}/confirm`, {}); toast(`${r.confirmed} planned absence(s) confirmed as excused`); refresh(); });
   on(el, 'click', '#code', async () => {
     const r = data.code ? { code: data.code.code, expires_at: data.code.expires_at } : await api.post(`/api/attendance/${id}/code`, { minutes: 120 });
@@ -128,8 +130,10 @@ async function reports(el, ctx) {
       <select data-f="team_id"><option value="">All teams</option>${options(teams, q.team_id)}</select>
       <select data-f="type"><option value="">All event types</option>${options([['practice', 'Practice'], ['game', 'Game'], ['lift', 'Lift'], ['film', 'Film'], ['social', 'Team event']], q.type)}</select></div>
     <div class="grid g4" style="margin-bottom:14px">${r.by_type.map((t) => html`<div class="card stat"><div class="k">${cap(t.type)}</div><div class="v">${t.rate}%</div><div class="d">${t.attended} of ${t.total} check-ins</div></div>`)}</div>
-    <div class="card"><div class="bd flush tbl-wrap"><table><thead><tr><th>Player</th><th class="num">#</th><th class="num">Events</th><th class="num">Present</th><th class="num">Late</th><th class="num">Left early</th><th class="num">Excused</th><th class="num">Unexcused</th><th>Rate</th></tr></thead><tbody>
+    <div class="card"><div class="bd flush tbl-wrap"><table><thead><tr><th>Player</th><th class="num">#</th><th class="num">Events</th><th class="num">Present</th><th class="num">Tardy</th><th class="num">Left early</th><th class="num">Excused</th><th class="num">Absent</th><th>Rate</th></tr></thead><tbody>
       ${r.players.map((p) => html`<tr class="click" onclick="__navigate('/players/${p.player_id}')"><td><b>${p.name}</b> ${flagged(p) ? html`<span class="badge bad">Over threshold</span>` : ''}</td><td class="num">${p.jersey ?? ''}</td><td class="num">${p.total}</td><td class="num">${p.present}</td><td class="num">${p.late}</td><td class="num">${p.left_early}</td><td class="num">${p.excused}</td><td class="num">${p.unexcused}</td><td style="width:150px"><div class="row" style="flex-wrap:nowrap">${bar(p.rate, p.rate < 80 ? 'bad' : p.rate < 90 ? 'warn' : '')}<span class="s">${p.rate}%</span></div></td></tr>`)}
-    </tbody></table>${!r.players.length ? empty('No attendance recorded in this range.') : ''}</div></div>`);
+    </tbody></table>${!r.players.length ? empty('No attendance recorded in this range.') : ''}</div></div>
+    <div id="fbtrends" style="margin-top:14px"></div>`);
+  import('./fb-attendance.js').then((m) => m.trendsSection($('#fbtrends', el), q, st)).catch(() => {}); // C-20
   $$('[data-f]', el).forEach((s) => { s.onchange = () => ctx.navigate('/attendance/reports?' + new URLSearchParams(Object.fromEntries(Object.entries({ ...q, [s.dataset.f]: s.value }).filter(([, v]) => v)))); });
 }

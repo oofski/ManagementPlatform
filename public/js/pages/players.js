@@ -23,6 +23,7 @@ async function roster(el, ctx) {
     if (q.team_id) r = r.filter((p) => p.team_id === Number(q.team_id));
     if (q.unit) r = r.filter((p) => p.units.includes(q.unit));
     if (q.position) r = r.filter((p) => p.positions.includes(q.position));
+    if (q.group) r = r.filter((p) => p.primary_group === q.group); // C-2: one primary position group per athlete
     if (q.availability) r = r.filter((p) => p.availability === q.availability);
     if (q.q) r = r.filter((p) => p.name.toLowerCase().includes(q.q.toLowerCase()) || String(p.jersey) === q.q);
     return sortRows(r, sortKey, dir);
@@ -31,7 +32,7 @@ async function roster(el, ctx) {
   const teamsAll = st.levels.flatMap((l) => l.teams.map((t) => [t.id, t.name === l.name ? t.name : `${l.name} ${t.name}`]));
   const th = (k, l, cls = '') => html`<th class="sortable ${cls}" data-sort="${k}">${l}${sortKey === k ? (dir > 0 ? ' ↑' : ' ↓') : ''}</th>`;
   set(el, html`<div class="page-head"><div><h1>Players</h1><div class="sub">${rows.length} of ${list.length} players${q.archived ? ' (including archived)' : ''}</div></div>
-    <div class="actions">${staff ? html`<a class="btn" href="/api/players/export.csv" download>Export</a>` : ''}${edit ? html`<button id="imp">Import spreadsheet</button><button class="primary" id="add">Add player</button>` : ''}${ctx.me.caps.admin ? html`<button id="roll">Season rollover</button>` : ''}</div></div>
+    <div class="actions">${staff ? html`<a class="btn" href="/api/players/export.csv" download>Export</a>` : ''}${edit ? html`<button id="fbjoin">Team join codes</button><button id="imp">Import spreadsheet</button><button class="primary" id="add">Add player</button>` : ''}${ctx.me.caps.admin ? html`<button id="roll">Season rollover</button>` : ''}</div></div>
     ${rtabs('roster', ctx)}
     <div class="filters">
       <input type="search" id="q" placeholder="Name or number" value="${q.q || ''}">
@@ -39,7 +40,8 @@ async function roster(el, ctx) {
       <select data-f="team_id"><option value="">All teams</option>${options(teamsAll, q.team_id)}</select>
       <select data-f="unit"><option value="">All units</option>${options(Object.entries(UNIT), q.unit)}</select>
       <select data-f="position"><option value="">All positions</option>${options(codes, q.position)}</select>
-      ${staff ? html`<select data-f="availability"><option value="">Any status</option>${options([['available', 'Available'], ['limited', 'Limited'], ['out', 'Out']], q.availability)}</select>` : ''}
+      <select data-f="group"><option value="">All position groups</option>${options(codes.map((c) => [c, `${c} group`]), q.group)}</select>
+      ${staff ? html`<select data-f="availability"><option value="">Any status</option>${options([['available', 'Full'], ['limited', 'Limited'], ['out', 'Out'], ['cleared', 'Cleared']], q.availability)}</select>` : ''}
       ${ctx.me.caps.admin ? html`<label class="check"><input type="checkbox" id="arch" ${checked(q.archived)}> Show archived</label>` : ''}
     </div>
     <div class="card"><div class="bd flush tbl-wrap"><table><thead><tr><th></th>${th('jersey', '#', 'num')}${th('name', 'Name')}${th('team', 'Team')}<th>Units</th><th>Positions</th>${th('class_year', 'Class', 'num')}
@@ -56,6 +58,7 @@ async function roster(el, ctx) {
   if (edit) {
     $('#add', el).onclick = () => playerForm(ctx, st, null);
     $('#imp', el).onclick = () => importDialog(ctx);
+    $('#fbjoin', el).onclick = async () => (await import('./fb-profile.js')).joinCodesDialog(ctx); // C-4
   }
   if ($('#roll', el)) $('#roll', el).onclick = () => rollover(ctx, st, list);
 }
@@ -69,6 +72,7 @@ export function playerForm(ctx, st, p) {
       ${field('Name', html`<input name="name" value="${v.name || ''}" required>`)}${field('Email (for the invite)', html`<input type="email" name="email" value="${v.email || ''}">`)}
       ${field('Team', html`<select name="team_id">${options(st.levels.flatMap((l) => l.teams.map((t) => [t.id, t.name === l.name ? t.name : `${l.name} ${t.name}`])), v.team_id ?? '', { blank: '—' })}</select>`)}
       ${field('Jersey', html`<input type="number" name="jersey" value="${v.jersey ?? ''}" min="0" max="99">`)}${field('Class year', html`<input type="number" name="class_year" value="${v.class_year ?? ''}">`)}
+      ${field('Primary position group', html`<select name="primary_group">${options([...new Set(codes.map((c) => c.code))], v.primary_group || v.positions[0] || '', { blank: '—' })}</select>`, 'The one group this athlete sits in for lifting, attendance and reports')}
       ${field('Hand', html`<select name="hand">${options(['Right', 'Left', 'Both'], v.hand || 'Right')}</select>`)}
       ${field('Height (inches)', html`<input type="number" name="height" value="${v.height ?? ''}">`)}${field('Weight (lb)', html`<input type="number" name="weight" value="${v.weight ?? ''}">`)}${field('Measured on', html`<input type="date" name="measured_on" value="${todayISO()}">`)}
     </div>
@@ -89,7 +93,7 @@ function importDialog(ctx) {
   let rows = [];
   const m = modal({
     title: 'Import roster from a spreadsheet', wide: true,
-    body: html`<p>Upload a CSV file (save your spreadsheet as CSV). Columns: <span class="mono">name, email, jersey, class_year, team, units, positions, height, weight, hand</span>. Units and positions can be separated by spaces or slashes.</p>
+    body: html`<p>Upload a CSV file (save your spreadsheet as CSV). Columns: <span class="mono">name, grade (or class_year), position, jersey, team, email, parent_name, parent_email, parent_phone, parent2_name, parent2_email, parent2_phone, units, height, weight, hand</span>. Grade can be 9 to 12 or Fr, So, Jr, Sr. Positions can be separated by spaces or slashes; the first is the primary group. Each parent listed gets an invite and is linked to the player (up to 2).</p>
       <div class="row"><input type="file" accept=".csv,text/csv" id="file" style="width:auto"><button class="sm" id="tpl">Download template</button></div><div id="prev" style="margin-top:12px"></div>`,
     actions: [{ label: 'Cancel' }, { label: 'Import', primary: true, onClick: async () => {
       if (!rows.length) { toast('Choose a file first', 'warn'); return false; }
@@ -99,7 +103,7 @@ function importDialog(ctx) {
       ctx.reload();
     } }],
   });
-  m.root.querySelector('#tpl').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['name,email,jersey,class_year,team,units,positions,height,weight,hand\nJordan Smith,jsmith@school.org,12,2028,JV Red,offense special,WR RET,70,165,Right\n'], { type: 'text/csv' })); a.download = 'roster-template.csv'; a.click(); };
+  m.root.querySelector('#tpl').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['name,grade,position,jersey,team,email,parent_name,parent_email,parent_phone,parent2_name,parent2_email,parent2_phone,height,weight,hand\nJordan Smith,10,WR RET,12,JV Red,,Lisa Smith,lsmith@example.com,555-0101,,,,70,165,Right\n'], { type: 'text/csv' })); a.download = 'roster-template.csv'; a.click(); };
   m.root.querySelector('#file').onchange = async (e) => {
     const text = await e.target.files[0].text();
     rows = parseCSV(text);
@@ -113,13 +117,14 @@ function rollover(ctx, st, list) {
     title: 'Season rollover', wide: true,
     body: html`<p>Move players up a level and archive graduates. Archived players keep their history; their access ends.</p>
       <form id="rf">${field('Archive players with class year up to', html`<input type="number" name="grad" value="${year}">`)}
+      ${field('Start a new season (optional)', html`<input name="new_season" placeholder="Fall ${year + 1}">`, 'Every athlete’s tests, PRs and attendance rate for this season are saved to their history first.')}
       <h4 style="margin:10px 0 6px">Move teams</h4>${st.levels.flatMap((l) => l.teams.map((t) => html`<div class="inline-input" style="margin-bottom:6px"><span style="width:140px">${l.name} ${t.name === l.name ? '' : t.name}</span><span>→</span><select name="to_${t.id}">${options(st.levels.flatMap((x) => x.teams.map((y) => [y.id, y.name === x.name ? y.name : `${x.name} ${y.name}`])), '', { blank: 'Stay' })}</select></div>`))}</form>`,
     actions: [{ label: 'Cancel' }, { label: 'Run rollover', danger: true, onClick: async (r) => {
       const f = formData(r.querySelector('#rf'));
       const moves = [];
       for (const [k, v] of Object.entries(f)) if (k.startsWith('to_') && v) for (const p of list.filter((x) => x.team_id === Number(k.slice(3)) && (!f.grad || x.class_year > f.grad))) moves.push({ player_id: p.id, team_id: Number(v) });
-      const res = await api.post('/api/players/rollover', { moves, graduating_class: f.grad });
-      toast(`Moved ${res.moved}, archived ${res.archived}`); ctx.reload();
+      const res = await api.post('/api/players/rollover', { moves, graduating_class: f.grad, new_season: f.new_season ? { name: f.new_season } : null });
+      toast(`Saved ${res.snapshot?.athletes ?? 0} season records. Moved ${res.moved}, archived ${res.archived}`); ctx.reload();
     } }],
   });
 }
@@ -164,13 +169,15 @@ async function profile(el, ctx, id) {
     </div>
     <div class="stack">
       ${p.parents ? html`<div class="card"><div class="hd"><h2>Parents and guardians</h2></div>${p.parents.length ? html`<ul class="list">${p.parents.map((x) => html`<li><span class="grow">${x.name}</span><span class="s">${x.relation}</span>${x.pending ? html`<span class="badge warn">Invited</span>` : html`<span class="badge ok">Joined</span>`}</li>`)}</ul>` : empty('No parents connected. Players invite up to 2.')}</div>` : ''}
+      <div id="fbx" class="stack"></div>
       ${mine || staff ? html`<div class="card"><div class="hd"><h2>Equipment</h2><span class="r"><a href="/equipment${staff ? `?player=${id}` : ''}">Details</a></span></div><div class="bd" id="eq"><span class="muted">Loading…</span></div></div>` : ''}
     </div>
   </div>`);
+  import('./fb-profile.js').then((m) => m.profileExtras($('#fbx', el), ctx, p)).catch(() => {}); // C-20, C-24, F-12, F-13, F-18
   if ($('#eq', el)) api.get(`/api/eq/player/${id}`).then((items) => set($('#eq', el), items.filter((i) => !i.returned_at).length ? html`<ul class="list" style="margin:-14px">${items.filter((i) => !i.returned_at).map((i) => html`<li><span class="grow">${i.type_name}${i.serial ? ` ${i.serial}` : ''}</span><span class="s">${i.size || ''}</span></li>`)}</ul>` : html`<span class="muted">Nothing issued.</span>`)).catch(() => {});
   if ($('#edit', el)) $('#edit', el).onclick = () => playerForm(ctx, st, p);
   if ($('#av', el)) $('#av', el).onclick = () => modal({
-    title: 'Set availability', body: html`<form id="af">${field('Status', html`<select name="availability">${options([['available', 'Available'], ['limited', 'Limited'], ['out', 'Out']], p.availability)}</select>`)}
+    title: 'Set availability', body: html`<form id="af">${field('Status', html`<select name="availability">${options([['available', 'Full'], ['limited', 'Limited'], ['out', 'Out'], ['cleared', 'Cleared']], p.availability)}</select>`)}
       ${field('Expected return date', html`<input type="date" name="return_date" value="${p.return_date || ''}">`)}${field('Note (staff and player only)', html`<input name="note" value="${p.avail_note || ''}" placeholder="No contact; cleared for walkthrough">`, 'Keep it to availability. Detailed medical records do not belong here.')}</form>`,
     actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, onClick: async (r) => { await api.put(`/api/players/${id}/availability`, formData(r.querySelector('#af'))); toast('Availability updated; staff notified'); ctx.reload(); } }],
   });

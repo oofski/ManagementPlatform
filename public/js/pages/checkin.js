@@ -11,7 +11,7 @@ export default async function checkin(el, ctx) {
   const submit = async () => {
     try {
       const r = await api.post('/api/checkin', { code: $('#code', el).value });
-      set($('#res', el), html`<div class="notice ${r.status === 'late' ? 'warn' : 'ok'}">${r.already ? 'You were already checked in' : 'Checked in'}${r.event ? ` for ${r.event}` : ''}: <b>${cap(r.status)}</b></div>`);
+      set($('#res', el), html`<div class="notice ${r.status === 'late' ? 'warn' : 'ok'}">${r.already ? 'You were already checked in' : 'Checked in'}${r.event ? ` for ${r.event}` : ''}: <b>${r.status === 'late' ? 'Tardy' : cap(r.status)}</b></div>`);
       toast('Checked in');
     } catch (err) { errToast(err); }
   };

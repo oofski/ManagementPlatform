@@ -2,6 +2,7 @@
 import { api, flushQueue, queueLength, onQueueChange } from './api.js';
 import { html, set, $, on, toast, errToast, modal, ago, ROLE, esc, initials } from './ui.js';
 import { icon as lucide } from './icons.js';
+import './desktop.js'; // Windows app: update status pill; in browsers: "Download for Windows" link in the sidebar footer
 
 const icon = (k, size = 16) => lucide(k, size);
 
@@ -20,6 +21,11 @@ const ROUTES = [
   ['/settings', 'settings', 'Program settings'], ['/settings/staff', 'settings', 'Staff and roles'], ['/settings/audit', 'settings', 'Audit log'], ['/settings/outbox', 'settings', 'Email outbox'], ['/account', 'settings', 'My account'],
   ['/checkin', 'checkin', 'Check in'],
   ['/settings/integrations', 'integrations', 'Integrations'],
+  // v2 football operations
+  ['/eligibility', 'eligibility', 'Eligibility'], ['/forms', 'eligibility', 'Forms'], ['/safety', 'safety', 'Health and safety'],
+  ['/messages/documents', 'documents', 'Documents'], ['/messages/digest', 'documents', 'Parent digest'],
+  ['/recruiting', 'recruiting', 'Recruiting'], ['/recruiting/:id', 'recruiting', 'Recruiting profile'],
+  ['/kiosk/:id', 'kiosk', 'Check-in kiosk'], ['/join', 'join', 'Join a team'],
 ];
 const compiled = ROUTES.map(([p, mod, title]) => {
   const keys = [];
@@ -45,6 +51,9 @@ function nav(me) {
     add('/weights', 'Weight room', 'dumbbell');
     add('/assignments', 'Assignments', 'tasks');
     if (c['season.view']) add('/development', 'Development', 'chart');
+    if (role !== 'staff' || c['eligibility.edit'] || me.user.staff_kind === 'athletic_director') add('/eligibility', 'Eligibility', 'shield');
+    add('/safety', 'Health and safety', 'alert');
+    add('/recruiting', 'Recruiting', 'user');
     items.push({ sec: 'Program' });
     add('/messages', 'Messages', 'chat');
     if (c['equipment.view']) add('/equipment', 'Equipment', 'box');
@@ -62,6 +71,7 @@ function nav(me) {
     add('/messages', 'Messages', 'chat');
     add('/equipment', role === 'parent' ? 'Equipment' : 'My gear', 'box');
     if (role === 'parent') add('/weights', 'Nutrition', 'dumbbell');
+    if (role === 'parent') add('/forms', 'Forms', 'clipboard');
     add('/account', 'My account', 'user');
   }
   return items;
@@ -177,6 +187,7 @@ async function route() {
   const url = new URL(location.href);
   const path = url.pathname;
   if (path.startsWith('/invite/')) return (await import('./pages/auth.js')).invite(path.split('/')[2]);
+  if (path === '/join' && !state.me) return (await import('./pages/join.js')).standalone(); // C-4: no account yet
   if (!state.me) return (await import('./pages/auth.js')).login();
   let match = null; let params = {};
   for (const r of compiled) { const m = path.match(r.re); if (m) { match = r; r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); }); break; } }

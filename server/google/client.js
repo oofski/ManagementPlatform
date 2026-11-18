@@ -12,22 +12,48 @@ export const FEATURES = {
   sheets: { label: 'Google Sheets', scopes: ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file'], help: 'Import the roster and test maxes; export roster, attendance and equipment lists.' },
   docs: { label: 'Google Docs', scopes: ['https://www.googleapis.com/auth/documents', 'https://www.googleapis.com/auth/drive.file'], help: 'Export practice plans and season reports as Google Docs.' },
 };
-export const BASE_SCOPES = ['openid', 'email'];
+// openid/email/profile let the app show which Google account is connected (email, name and photo).
+export const BASE_SCOPES = ['openid', 'email', 'profile'];
+export const SIGNIN_SCOPES = ['openid', 'email', 'profile'];
 export const SCOPE = {
   gmailRead: 'https://www.googleapis.com/auth/gmail.readonly', gmailSend: 'https://www.googleapis.com/auth/gmail.send', gmailModify: 'https://www.googleapis.com/auth/gmail.modify',
   calendar: 'https://www.googleapis.com/auth/calendar', sheets: 'https://www.googleapis.com/auth/spreadsheets', docs: 'https://www.googleapis.com/auth/documents', driveFile: 'https://www.googleapis.com/auth/drive.file',
 };
 export const featuresFromScopes = (scopes) => Object.keys(FEATURES).filter((f) => FEATURES[f].scopes.every((s) => scopes.includes(s)));
 
-export function config() {
+// The public address of the app: APP_URL when set, otherwise the address the request came in on
+// (X-Forwarded-Proto / X-Forwarded-Host from a proxy such as Render, else the Host header).
+export function originFrom(req) {
+  if (!req || !req.headers) return '';
+  const h = req.headers;
+  const first = (v) => String(v || '').split(',')[0].trim();
+  const host = first(h['x-forwarded-host']) || first(h.host);
+  if (!host || !/^[a-z0-9.\-:[\]]+$/i.test(host)) return '';
+  let proto = first(h['x-forwarded-proto']).toLowerCase();
+  if (proto !== 'http' && proto !== 'https') proto = req.socket?.encrypted ? 'https' : 'http';
+  return `${proto}://${host}`;
+}
+export function appUrlFor(origin) {
+  return (process.env.APP_URL || origin || '').replace(/\/+$/, '');
+}
+export const REDIRECT_PATHS = { connect: '/api/google/callback', google: '/api/auth/google/callback', clever: '/api/auth/clever/callback' };
+
+// creds: the Client ID and secret the head coach saved in the app ({ client_id, client_secret }), or null.
+// Saved credentials win; GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are the fallback.
+export function config({ creds = null, origin = '' } = {}) {
   const env = process.env;
-  const appUrl = (env.APP_URL || '').replace(/\/+$/, '');
-  const missing = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'APP_URL'].filter((k) => !env[k]);
+  const appUrl = appUrlFor(origin);
+  const fromApp = !!(creds && creds.client_id && creds.client_secret);
+  const clientId = fromApp ? creds.client_id : env.GOOGLE_CLIENT_ID;
+  const clientSecret = fromApp ? creds.client_secret : env.GOOGLE_CLIENT_SECRET;
+  const missing = fromApp ? [] : ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'].filter((k) => !env[k]);
   const apiBase = (env.GOOGLE_API_BASE || '').replace(/\/+$/, '');
   return {
-    configured: !missing.length, missing,
-    clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, appUrl,
-    redirectUri: appUrl ? `${appUrl}/api/google/callback` : null,
+    configured: !missing.length, missing, source: fromApp ? 'app' : missing.length ? null : 'env',
+    clientId, clientSecret, appUrl, appUrlFromEnv: !!env.APP_URL,
+    redirectUri: appUrl ? `${appUrl}${REDIRECT_PATHS.connect}` : null,
+    signinRedirectUri: appUrl ? `${appUrl}${REDIRECT_PATHS.google}` : null,
+    issuers: env.GOOGLE_ISSUER ? [env.GOOGLE_ISSUER] : ['https://accounts.google.com', 'accounts.google.com'],
     authUrl: env.GOOGLE_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: env.GOOGLE_TOKEN_URL || 'https://oauth2.googleapis.com/token',
     revokeUrl: env.GOOGLE_REVOKE_URL || (apiBase ? `${apiBase}/revoke` : 'https://oauth2.googleapis.com/revoke'),
@@ -37,10 +63,9 @@ export function config() {
   };
 }
 export function notConfiguredMessage(cfg = config()) {
-  return `Google is not set up on this server yet. Set ${cfg.missing.join(', ')} in the server environment (and TOKEN_KEY to encrypt stored tokens), then restart. See docs/google-setup.md.`;
+  return `Google is not set up yet. The head coach adds the Google Client ID and Client secret under Settings › Integrations › Setup (or sets ${cfg.missing.join(', ')} in the server environment). See docs/google-setup.md.`;
 }
-export function requireConfigured() {
-  const cfg = config();
+export function requireConfigured(cfg = config()) {
   if (!cfg.configured) throw new HttpError(503, notConfiguredMessage(cfg));
   return cfg;
 }
@@ -91,6 +116,28 @@ export function authorizeUrl(cfg, { state, scopes, loginHint }) {
   if (loginHint) q.set('login_hint', loginHint);
   return `${cfg.authUrl}?${q}`;
 }
+// OpenID Connect sign-in ("Sign in with Google"): no offline access, just who the person is.
+export function signinUrl(cfg, { state, nonce, hd }) {
+  const q = new URLSearchParams({
+    client_id: cfg.clientId, redirect_uri: cfg.signinRedirectUri, response_type: 'code', scope: SIGNIN_SCOPES.join(' '),
+    state, nonce, prompt: 'select_account',
+  });
+  if (hd) q.set('hd', hd);
+  return `${cfg.authUrl}?${q}`;
+}
+export async function exchangeSigninCode(cfg, code) {
+  const r = await postForm(cfg.tokenUrl, { code, client_id: cfg.clientId, client_secret: cfg.clientSecret, redirect_uri: cfg.signinRedirectUri, grant_type: 'authorization_code' });
+  if (!r.ok || !r.data.id_token) throw new HttpError(400, `Google sign-in failed: ${r.data.error_description || r.data.error || r.status}`);
+  return r.data;
+}
+// Checks a Client ID / secret pair without a user: Google answers invalid_client for a wrong pair and
+// invalid_grant for a made-up code when the pair is right.
+export async function checkClient(cfg) {
+  const r = await postForm(cfg.tokenUrl, { code: 'program-manager-check', client_id: cfg.clientId, client_secret: cfg.clientSecret, redirect_uri: cfg.redirectUri || 'https://localhost/api/google/callback', grant_type: 'authorization_code' });
+  if (r.data.error === 'invalid_client' || r.data.error === 'unauthorized_client') return { ok: false, error: 'Google did not accept this Client ID and Client secret. Copy both again from Google Cloud › Credentials.' };
+  if (r.data.error === 'invalid_grant' || r.data.error === 'redirect_uri_mismatch' || r.ok) return { ok: true };
+  return { ok: false, error: `Google answered: ${r.data.error_description || r.data.error || `HTTP ${r.status}`}` };
+}
 async function postForm(url, params) {
   let res;
   try {
@@ -119,8 +166,12 @@ export async function revoke(cfg, tokenValue) {
 }
 // Email from the id_token returned directly by the token endpoint over TLS (no signature check needed there).
 export function emailFromIdToken(idToken) {
-  try { return JSON.parse(Buffer.from(String(idToken).split('.')[1], 'base64url').toString('utf8')).email || null; } catch { return null; }
+  return claimsFromIdToken(idToken)?.email || null;
 }
+export function claimsFromIdToken(idToken) {
+  try { return JSON.parse(Buffer.from(String(idToken).split('.')[1], 'base64url').toString('utf8')); } catch { return null; }
+}
+export { postForm };
 
 // ---------- REST calls ----------
 // getAccess(force) returns a valid access token (refreshing when needed); it is supplied by the module.

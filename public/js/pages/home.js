@@ -11,10 +11,11 @@ export default async function home(el, ctx) {
 
 function staffHome(el, ctx, d) {
   const av = d.availability || {};
-  const totalPlayers = (av.available || 0) + (av.limited || 0) + (av.out || 0);
+  const totalPlayers = (av.available || 0) + (av.limited || 0) + (av.out || 0) + (av.cleared || 0);
   set(el, html`
   <div class="page-head"><div><h1>Overview</h1><div class="sub">${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${ctx.me.season?.name || ''}</div></div>
     <div class="actions">${ctx.me.caps['calendar.edit'] ? html`<a class="btn" href="/calendar?new=1">${icon('plus', 14)} New event</a>` : ''}${ctx.me.caps['messages.send'] ? html`<a class="btn" href="/messages/announcements?new=1">Announcement</a>` : ''}<a class="btn primary" href="/attendance">${icon('calendar-check', 14)} Take attendance</a></div></div>
+  <div id="fbelig"></div>
   ${d.conflicts ? html`<div class="notice warn">${d.conflicts} offline change(s) conflict with newer edits. <a href="/attendance">Review on the attendance page</a>.</div>` : ''}
   ${d.open_reports || d.pending_blocks ? html`<div class="notice warn">${d.open_reports ? `${d.open_reports} reported or flagged message(s)` : ''}${d.open_reports && d.pending_blocks ? ' · ' : ''}${d.pending_blocks ? `${d.pending_blocks} parent contact-block request(s)` : ''} need review. <a href="/messages/moderation">Open moderation</a></div>` : ''}
   <div class="grid g4" style="margin-bottom:14px">
@@ -51,6 +52,11 @@ function staffHome(el, ctx, d) {
       </div>
     </div>
   </div>`);
+  // F-13: eligibility count on the dashboard (staff who can see eligibility).
+  api.get('/api/fb/eligibility/summary').then((s) => {
+    const box = el.querySelector('#fbelig');
+    if (box && (s.not_cleared || s.expiring)) set(box, html`<div class="notice ${s.expired ? 'bad' : 'warn'}">${icon('shield', 14)} ${s.cleared} of ${s.total} athletes cleared to participate · ${s.not_cleared} not cleared${s.expiring ? ` · ${s.expiring} physical(s) expiring soon` : ''}${s.expired ? ` · ${s.expired} expired` : ''}. <a href="/eligibility?status=not_cleared">Review eligibility</a></div>`);
+  }).catch(() => {});
 }
 
 function familyHome(el, ctx, d) {

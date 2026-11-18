@@ -57,14 +57,16 @@ The app also covers role-based access, an audit log, invite-based sign-in with t
 
 ## Google Workspace
 
-Each staff member can connect their own Google account under **Integrations** (`/settings/integrations`) and choose which features to grant:
+The head coach sets Google up once in the app, under **Integrations › Setup**: a step list with the exact addresses to paste into Google Cloud, and fields for the Client ID and Client secret (stored encrypted, never shown again). Then each staff member connects their own Google account under **Integrations › Connection** with **Continue with Google**, sees the connected account, and switches each service on or off (turning one on later asks Google for just that service):
 
 - **Gmail:** emails with a label you pick (default "Team Calendar") are scanned every 10 minutes; a built-in parser turns dates, times, places and opponents into event drafts that you review, edit and approve onto the calendar. Approved emails get an "Imported" label. The head coach can also deliver the email outbox through a staff member's Gmail.
 - **Google Calendar:** push the events you can see to a Google calendar (re-pushing updates instead of duplicating) and import Google events into the same review queue.
 - **Google Sheets:** import the roster or test maxes from a sheet; export roster, attendance and outstanding equipment to a new spreadsheet.
 - **Google Docs:** export a practice plan or a player's season report.
 
-It needs a Google Cloud OAuth client and these environment variables: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `APP_URL` and `TOKEN_KEY` (tokens are stored encrypted). Step-by-step setup for Render: [docs/google-setup.md](docs/google-setup.md).
+**School sign-in:** the same Google client adds **Continue with Google** to the sign-in page (OpenID Connect), optionally limited to your Google Workspace for Education domain. **Clever** can be configured the same way. A person signs in only when their verified email matches an active account; nobody is created automatically.
+
+It needs a Google Cloud OAuth client (configured in the app, or `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as a fallback) and `TOKEN_KEY` on the server (tokens and secrets are stored encrypted). The app works out its own address from the request; set `APP_URL` only if it gets it wrong. Step-by-step: [docs/google-setup.md](docs/google-setup.md).
 
 ## Not connected yet
 
@@ -72,23 +74,24 @@ These need school accounts or credentials before they can work:
 
 - **Email:** messages are written to an outbox, which you can view under Settings › Email outbox. Real delivery needs a mail provider, or a connected Gmail account (see Google Workspace above).
 - **Push:** notifications appear in the app's Alerts panel. Real phone push needs Web Push keys.
-- **School sign-in:** the Google and Microsoft buttons explain that the school's OAuth client must be set up first.
+- **School sign-in:** Google and Clever sign-in appear on the sign-in page once the head coach turns them on under Integrations › Setup. Microsoft sign-in is not built.
 - **QR images:** the check-in QR image is drawn with a small library from cdnjs. The typed code always works without it.
 
 These rules should be confirmed with counsel and the state association before launch: education privacy law, parental consent, district messaging policy, current NFHS and state game-day technology rules, and practice-time limits.
 
 ## Deploy on Render
 
-`render.yaml` is a Render Blueprint: in Render choose **New › Blueprint**, pick this repository, and it creates one web service with a persistent 1 GB disk for the database. It starts in demo mode (`DEMO_MODE=1`), with the sample program and demo sign-ins. For real use, set `DEMO_MODE=0` and fill in `ADMIN_EMAIL`, `ADMIN_PASSWORD` and `PROGRAM_NAME`. The first start then creates your program and head coach account. Set `APP_URL` to the service URL, and follow [docs/google-setup.md](docs/google-setup.md) to connect Google.
+`render.yaml` is a Render Blueprint: in Render choose **New › Blueprint**, pick this repository, and it creates one web service with a persistent 1 GB disk for the database. It starts in demo mode (`DEMO_MODE=1`), with the sample program and demo sign-ins. For real use, set `DEMO_MODE=0` and fill in `ADMIN_EMAIL`, `ADMIN_PASSWORD` and `PROGRAM_NAME`. The first start then creates your program and head coach account. Set `TOKEN_KEY`, and follow [docs/google-setup.md](docs/google-setup.md) to connect Google.
 
 ## Windows desktop app
 
 `desktop/` is an Electron app that installs like any Windows program and updates itself.
 
-- **Download:** get `ProgramManager-Setup-x.y.z.exe` from the repository's [Releases](https://github.com/oofski/ManagementPlatform/releases) page.
+- **Download:** [ProgramManager-Setup.exe](https://github.com/oofski/ManagementPlatform/releases/latest/download/ProgramManager-Setup.exe) always points to the newest release. The web app shows a **Download for Windows** link in the sidebar footer (hidden inside the desktop app and on phones).
 - **First run:** choose to connect to your program's server (for example your Render link), so that coaches, players and parents share one program, or to run everything on this computer.
-- **Updates:** the app checks Releases at launch and every 6 hours. It downloads new versions in the background and asks to restart. You can also check from Help › Check for updates.
-- **Publishing an update:** bump `version` in `desktop/package.json` (for example to 1.0.1), commit and push. The **Desktop release** workflow builds the installer on Windows and publishes the release, and installed apps pick it up automatically.
+- **Updates are automatic:** the app checks Releases at launch and every 2 hours and downloads new versions in the background (only the changed parts, using the `.blockmap`). Progress shows on the taskbar icon and in a small pill in the app ("Update 2.0.1 downloading 45%", then "Restart to update"). If you do not restart, the update installs silently when you close the app. After an update the pill offers **What's new** with the release notes. Help › Check for updates also works.
+- **Google and Clever in the app:** Google does not allow sign-in inside app windows, so "Continue with Google", "Continue with Clever" and connecting Google open your normal browser. The app shows a four-letter code, the browser shows the same code and "You can return to Program Manager", and the app finishes by itself.
+- **Publishing an update:** bump `version` in `desktop/package.json` (for example to 1.0.1), commit and push. The **Desktop release** workflow builds the installer on Windows and publishes the release (the versioned installer, its `.blockmap`, `latest.yml`, and a version-less `ProgramManager-Setup.exe` for the download link), and installed apps pick it up automatically.
 - **Local development:** run `cd desktop`, then `npm install`, then `npm start`.
 
 The installer is not code-signed yet, so Windows SmartScreen shows "Windows protected your PC" the first time. Click **More info** and then **Run anyway**. A code-signing certificate removes this warning.

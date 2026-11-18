@@ -3,7 +3,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { start, today, addDays } from './helpers.js';
+import { start, today, addDays, addOtherProgram } from './helpers.js';
 import { parseEmail } from '../server/google/parser.js';
 
 // ---------- fake Google ----------
@@ -12,6 +12,7 @@ const fake = {
   grantScope: '', access: new Set(), n: 0, tokenCalls: [], revoked: [], sent: [], modified: [], queries: [],
   labels: [{ id: 'Label_1', name: 'Team Calendar', type: 'user' }, { id: 'INBOX', name: 'INBOX', type: 'system' }],
   messages: {}, calendars: { primary: {}, 'team@group.calendar.google.com': {} }, sheets: {}, created: {}, uploads: [],
+  clients: { 'test-client': 'test-secret', 'app-client.apps.googleusercontent.com': 'APP-SECRET-9c1d' }, idClaims: {}, cleverEmail: null,
 };
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const spoken = (d) => `${MONTHS[Number(d.slice(5, 7)) - 1]} ${Number(d.slice(8))}`;
@@ -36,11 +37,17 @@ function fakeHandler(req, res) {
     if (p === '/token') {
       const f = Object.fromEntries(new URLSearchParams(raw));
       fake.tokenCalls.push(f.grant_type);
-      if (f.client_id !== 'test-client' || f.client_secret !== 'test-secret') return send(401, { error: 'invalid_client' });
+      if (!fake.clients[f.client_id] || fake.clients[f.client_id] !== f.client_secret) return send(401, { error: 'invalid_client' });
+      if (f.grant_type === 'authorization_code' && f.code.startsWith('sso')) {
+        // OpenID Connect sign-in: an ID token for whoever the test says signed in.
+        if (f.redirect_uri !== 'https://pm.example.com/api/auth/google/callback') return send(400, { error: 'redirect_uri_mismatch' });
+        const at = `ya29.fake-access-${++fake.n}`;
+        return send(200, { access_token: at, expires_in: 3600, scope: 'openid email profile', token_type: 'Bearer', id_token: jwt({ aud: f.client_id, iss: 'https://accounts.google.com', exp: Math.floor(Date.now() / 1000) + 600, ...fake.idClaims }) });
+      }
       if (f.grant_type === 'authorization_code') {
         if (f.code !== 'good-code' || f.redirect_uri !== 'https://pm.example.com/api/google/callback') return send(400, { error: 'invalid_grant' });
         const at = `ya29.fake-access-${++fake.n}`; fake.access.add(at);
-        return send(200, { access_token: at, refresh_token: REFRESH, expires_in: 3600, scope: fake.grantScope, token_type: 'Bearer', id_token: jwt({ email: 'headcoach@gmail.example' }) });
+        return send(200, { access_token: at, refresh_token: REFRESH, expires_in: 3600, scope: fake.grantScope, token_type: 'Bearer', id_token: jwt({ email: 'headcoach@gmail.example', name: 'Head Coach', picture: 'https://lh3.googleusercontent.com/a/fake-photo' }) });
       }
       if (f.grant_type === 'refresh_token') {
         if (f.refresh_token !== REFRESH || fake.revoked.includes(REFRESH)) return send(400, { error: 'invalid_grant' });
@@ -50,6 +57,18 @@ function fakeHandler(req, res) {
       return send(400, { error: 'unsupported_grant_type' });
     }
     if (p === '/revoke') { fake.revoked.push(Object.fromEntries(new URLSearchParams(raw)).token); return send(200, {}); }
+    // Clever: token endpoint with HTTP Basic client auth, then /v3.0/me and /v3.0/users/:id.
+    if (p === '/clever/tokens') {
+      const f = Object.fromEntries(new URLSearchParams(raw));
+      if (req.headers.authorization !== `Basic ${Buffer.from('clever-id:clever-secret').toString('base64')}`) return send(401, { error: 'invalid_client' });
+      if (f.code !== 'clever-code' || f.redirect_uri !== 'https://pm.example.com/api/auth/clever/callback') return send(400, { error: 'invalid_grant' });
+      return send(200, { access_token: 'clever-access-1', token_type: 'bearer' });
+    }
+    if (p.startsWith('/clever/v3.0/')) {
+      if (req.headers.authorization !== 'Bearer clever-access-1') return send(401, { error: 'unauthorized' });
+      if (p === '/clever/v3.0/me') return send(200, { type: 'user', data: { id: 'clever-u1', type: 'user', district: 'd1' } });
+      if (p === '/clever/v3.0/users/clever-u1') return send(200, { data: { id: 'clever-u1', email: fake.cleverEmail, name: { first: 'Demo', last: 'Player' } } });
+    }
     const auth = (req.headers.authorization || '').replace('Bearer ', '');
     if (!fake.access.has(auth)) return send(401, { error: { message: 'Invalid Credentials' } });
     const body = raw && (req.headers['content-type'] || '').includes('json') ? JSON.parse(raw) : null;
@@ -103,7 +122,7 @@ function fakeHandler(req, res) {
 }
 
 let t; let head; let player; let trainer; let dc; let fakeServer;
-const ENV = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'APP_URL', 'GOOGLE_AUTH_URL', 'GOOGLE_TOKEN_URL', 'GOOGLE_API_BASE', 'TOKEN_KEY'];
+const ENV = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'APP_URL', 'GOOGLE_AUTH_URL', 'GOOGLE_TOKEN_URL', 'GOOGLE_API_BASE', 'TOKEN_KEY', 'CLEVER_AUTH_URL', 'CLEVER_TOKEN_URL', 'CLEVER_API_BASE'];
 before(async () => {
   fakeServer = http.createServer(fakeHandler);
   await new Promise((r) => fakeServer.listen(0, '127.0.0.1', r));
@@ -111,6 +130,7 @@ before(async () => {
   Object.assign(process.env, {
     GOOGLE_CLIENT_ID: 'test-client', GOOGLE_CLIENT_SECRET: 'test-secret', APP_URL: 'https://pm.example.com',
     GOOGLE_AUTH_URL: `${g}/auth`, GOOGLE_TOKEN_URL: `${g}/token`, GOOGLE_API_BASE: g, TOKEN_KEY: 'test-token-key-0123456789',
+    CLEVER_AUTH_URL: `${g}/clever/authorize`, CLEVER_TOKEN_URL: `${g}/clever/tokens`, CLEVER_API_BASE: `${g}/clever`,
   });
   t = await start();
   head = await t.as('coach@ridgeview.example');
@@ -254,7 +274,7 @@ test('connect flow: scopes per feature, state bound to the session, staff only',
   // Only the scopes for the picked features are requested.
   const g = await head.post('/api/google/connect', { features: ['calendar'] });
   const gu = new URL(g.body.url);
-  assert.equal(gu.searchParams.get('scope'), 'openid email https://www.googleapis.com/auth/calendar');
+  assert.equal(gu.searchParams.get('scope'), 'openid email profile https://www.googleapis.com/auth/calendar');
   assert.equal(gu.searchParams.get('access_type'), 'offline');
   assert.equal(gu.searchParams.get('prompt'), 'consent');
   assert.equal(gu.searchParams.get('include_granted_scopes'), 'true');
@@ -539,6 +559,279 @@ test('docs: practice plan and season report export to new Google Docs', async ()
   assert.ok(fake.uploads.at(-1).raw.includes(`${pl.name}: season report`));
   assert.equal((await player.post('/api/google/docs/season-report', { player_id: pl.id })).status, 403);
   assert.ok(t.db.get(`SELECT 1 FROM audit WHERE action='google_export' AND entity='player'`));
+});
+
+// ---------- v2: connected account details and per-service switches ----------
+test('status shows the account name and photo; services can be switched off and on', async () => {
+  const s = (await head.get('/api/google/status')).body;
+  assert.equal(s.connection.name, 'Head Coach');
+  assert.equal(s.connection.picture, 'https://lh3.googleusercontent.com/a/fake-photo');
+  assert.deepEqual(s.connection.missing, []);
+  const off = await head.put('/api/google/features', { feature: 'docs', enabled: false });
+  assert.equal(off.status, 200);
+  assert.ok(!off.body.connection.features.includes('docs'));
+  assert.deepEqual(off.body.connection.disabled, ['docs']);
+  const plan = t.db.get('SELECT id FROM practice_plans LIMIT 1');
+  const blocked = await head.post('/api/google/docs/practice-plan', { plan_id: plan.id });
+  assert.equal(blocked.status, 403);
+  assert.match(blocked.body.error, /turned off/);
+  assert.equal((await head.put('/api/google/features', { feature: 'docs', enabled: true })).body.connection.features.includes('docs'), true);
+  assert.equal((await head.put('/api/google/features', { feature: 'nope', enabled: true })).status, 400);
+  assert.equal((await player.put('/api/google/features', { feature: 'docs', enabled: true })).status, 403);
+  // Scopes asked for but not granted (unticked on Google's screen) are reported so the page can offer a reconnect.
+  const { cb } = await connect(trainer, ['calendar', 'sheets'], 'openid email https://www.googleapis.com/auth/calendar');
+  assert.match(cb.body, /google=connected/);
+  const ts = (await trainer.get('/api/google/status')).body.connection;
+  assert.deepEqual(ts.features, ['calendar']);
+  assert.deepEqual(ts.missing, ['sheets']);
+  assert.equal((await trainer.put('/api/google/features', { feature: 'sheets', enabled: true })).body.needs_consent, true);
+  t.db.run('DELETE FROM google_accounts WHERE user_id=?', trainer.id); // (disconnect would revoke the shared fake token)
+});
+
+// ---------- v2: Google client configured in the app ----------
+const rawReq = async (method, path, { tokenValue, cookie, headers = {}, body } = {}) => {
+  const h = { ...headers };
+  if (tokenValue) h.Authorization = `Bearer ${tokenValue}`;
+  if (cookie) h.Cookie = cookie;
+  if (body !== undefined) h['Content-Type'] = 'application/json';
+  const res = await fetch(t.base + path, { method, headers: h, body: body !== undefined ? JSON.stringify(body) : undefined, redirect: 'manual' });
+  const text = await res.text();
+  let json = null; try { json = JSON.parse(text); } catch { /* html */ }
+  return { status: res.status, text, json, cookies: res.headers.getSetCookie() };
+};
+const cookieVal = (cookies, name) => { const c = cookies.find((x) => x.startsWith(`${name}=`)); return c ? c.split(';')[0].slice(name.length + 1) : null; };
+
+test('in-app Google credentials: head coach only, secret encrypted and never returned, app values win over env', async () => {
+  for (const c of [dc, player, trainer]) {
+    assert.equal((await c.get('/api/google/setup')).status, 403);
+    assert.equal((await c.put('/api/google/setup/google', { client_id: 'x' })).status, 403);
+  }
+  const before = (await head.get('/api/google/setup')).body;
+  assert.equal(before.google.source, 'env');
+  assert.equal(before.redirect_uris.connect, 'https://pm.example.com/api/google/callback');
+  assert.equal(before.redirect_uris.signin, 'https://pm.example.com/api/auth/google/callback');
+  assert.equal(before.redirect_uris.clever, 'https://pm.example.com/api/auth/clever/callback');
+  assert.equal((await head.put('/api/google/setup/google', { client_id: 'has spaces' })).status, 400);
+  assert.equal((await head.put('/api/google/setup/google', { hd: 'not a domain' })).status, 400);
+  const SECRET = 'APP-SECRET-9c1d';
+  const r = await head.put('/api/google/setup/google', { client_id: 'app-client.apps.googleusercontent.com', client_secret: SECRET });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.google.source, 'app');
+  assert.equal(r.body.google.secret_set, true);
+  assert.ok(!JSON.stringify(r.body).includes(SECRET));
+  assert.ok(!JSON.stringify((await head.get('/api/google/setup')).body).includes(SECRET));
+  assert.ok(!JSON.stringify((await head.get('/api/google/status')).body).includes(SECRET));
+  // Encrypted at rest, and not in the audit log.
+  for (const tb of t.db.all(`SELECT name FROM sqlite_master WHERE type='table'`).map((x) => x.name)) {
+    assert.ok(!JSON.stringify(t.db.all(`SELECT * FROM "${tb}"`)).includes(SECRET), `${tb} contains the plaintext secret`);
+  }
+  const row = t.db.get(`SELECT * FROM integration_credentials WHERE provider='google'`);
+  assert.match(row.client_secret_enc, /^v1:/);
+  assert.equal(t.app.ctx.google.vault.decrypt(row.client_secret_enc), SECRET);
+  assert.ok(t.db.get(`SELECT 1 FROM audit WHERE action='integration_setup'`));
+  // The saved client is used for connecting and for refreshing tokens.
+  const c = await head.post('/api/google/connect', { features: ['calendar'] });
+  assert.equal(new URL(c.body.url).searchParams.get('client_id'), 'app-client.apps.googleusercontent.com');
+  t.db.run('UPDATE google_accounts SET access_expires_at=0 WHERE user_id=?', head.id);
+  assert.equal((await head.get('/api/google/calendar/calendars')).status, 200);
+  // Check the pair against Google: right pair passes, a wrong secret is reported.
+  assert.equal((await head.post('/api/google/setup/google/check')).body.ok, true);
+  await head.put('/api/google/setup/google', { client_secret: 'wrong-secret' });
+  const bad = await head.post('/api/google/setup/google/check');
+  assert.equal(bad.body.ok, false);
+  assert.match(bad.body.error, /did not accept/);
+  // Another program sees nothing of this program's setup.
+  const other = addOtherProgram(t);
+  const oh = await t.as(other.head);
+  const ov = (await oh.get('/api/google/setup')).body;
+  assert.equal(ov.google.client_id, null);
+  assert.equal(ov.google.secret_set, false);
+  assert.equal(ov.google.source, 'env');
+  // Removing the in-app client falls back to the environment.
+  const del = await head.del('/api/google/setup/google');
+  assert.equal(del.body.google.source, 'env');
+  assert.equal(new URL((await head.post('/api/google/connect', { features: ['calendar'] })).body.url).searchParams.get('client_id'), 'test-client');
+});
+
+test('without APP_URL the app address comes from the request (X-Forwarded-Proto / Host)', async () => {
+  const saved = process.env.APP_URL;
+  delete process.env.APP_URL;
+  try {
+    const r = await rawReq('GET', '/api/google/setup', { tokenValue: head.token, headers: { 'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'ridgeview-pm.onrender.com' } });
+    assert.equal(r.json.app_url, 'https://ridgeview-pm.onrender.com');
+    assert.equal(r.json.redirect_uris.connect, 'https://ridgeview-pm.onrender.com/api/google/callback');
+    const c = await rawReq('POST', '/api/google/connect', { tokenValue: head.token, headers: { 'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'ridgeview-pm.onrender.com' }, body: { features: ['calendar'] } });
+    assert.equal(new URL(c.json.url).searchParams.get('redirect_uri'), 'https://ridgeview-pm.onrender.com/api/google/callback');
+    const plain = await rawReq('GET', '/api/google/setup', { tokenValue: head.token });
+    assert.match(plain.json.app_url, /^http:\/\/127\.0\.0\.1:\d+$/);
+  } finally { process.env.APP_URL = saved; }
+});
+
+// ---------- v2: school sign-in ----------
+async function googleStart(extra = {}) {
+  const r = await rawReq('POST', '/api/auth/sso/google/start', { body: extra });
+  assert.equal(r.status, 200, r.text);
+  const u = new URL(r.json.url);
+  return { r, u, state: u.searchParams.get('state'), nonce: u.searchParams.get('nonce'), browser: cookieVal(r.cookies, 'pm_sso') };
+}
+const googleCallback = (state, browser, code = 'sso-code') => rawReq('GET', `/api/auth/google/callback?code=${code}&state=${encodeURIComponent(state)}`, { cookie: browser ? `pm_sso=${browser}` : undefined });
+
+test('Sign in with Google: OpenID Connect, verified email matches an active account, unknown people are refused', async () => {
+  assert.deepEqual((await t.anon.get('/api/auth/sso/providers')).body.google, []);
+  assert.equal((await rawReq('POST', '/api/auth/sso/google/start', { body: {} })).status, 503);
+  assert.equal((await dc.put('/api/google/setup/google', { sso: true })).status, 403);
+  assert.equal((await head.put('/api/google/setup/google', { sso: true })).status, 200);
+  const prov = (await t.anon.get('/api/auth/sso/providers')).body;
+  assert.equal(prov.google.length, 1);
+  assert.deepEqual(prov.clever, []);
+
+  let { u, state, nonce, browser } = await googleStart();
+  assert.equal(u.searchParams.get('scope'), 'openid email profile');
+  assert.equal(u.searchParams.get('redirect_uri'), 'https://pm.example.com/api/auth/google/callback');
+  assert.equal(u.searchParams.get('client_id'), 'test-client');
+  assert.ok(nonce && browser);
+  assert.equal(u.searchParams.get('access_type'), null, 'sign-in asks for no offline access');
+
+  // Success: a player signs in and gets a session.
+  fake.idClaims = { email: 'Player@Ridgeview.example', email_verified: true, nonce, name: 'Demo QB' };
+  const ok = await googleCallback(state, browser);
+  assert.match(ok.text, /url=\//);
+  const sid = cookieVal(ok.cookies, 'sid');
+  assert.ok(sid);
+  const me = await t.client(sid).get('/api/me');
+  assert.equal(me.status, 200);
+  assert.equal(me.body.user.email, 'player@ridgeview.example');
+  assert.ok(t.db.get(`SELECT 1 FROM audit WHERE action='sign_in' AND user_id=? AND detail LIKE '%google%'`, player.id));
+  // The state is single use.
+  assert.match((await googleCallback(state, browser)).text, /sso_error=state/);
+
+  // Staff still go through two-step verification after Google.
+  ({ state, nonce, browser } = await googleStart());
+  fake.idClaims = { email: 'coach@ridgeview.example', email_verified: true, nonce };
+  const hc = await googleCallback(state, browser);
+  const hsid = cookieVal(hc.cookies, 'sid');
+  assert.equal((await t.client(hsid).get('/api/me')).body.twofa, true);
+
+  // Another browser (no matching pm_sso cookie) cannot finish someone else's sign-in.
+  ({ state, nonce } = await googleStart());
+  fake.idClaims = { email: 'player@ridgeview.example', email_verified: true, nonce };
+  const stolen = await googleCallback(state, null);
+  assert.match(stolen.text, /sso_error=state/);
+  assert.equal(cookieVal(stolen.cookies, 'sid'), null);
+
+  // No account with that email: refused with a clear message, nothing is created.
+  const users = t.db.get('SELECT count(*) n FROM users').n;
+  ({ state, nonce, browser } = await googleStart());
+  fake.idClaims = { email: 'stranger@gmail.example', email_verified: true, nonce };
+  const none = await googleCallback(state, browser);
+  assert.match(none.text, /sso_error=no_account/);
+  assert.equal(cookieVal(none.cookies, 'sid'), null);
+  assert.equal(t.db.get('SELECT count(*) n FROM users').n, users);
+  assert.ok(t.db.get(`SELECT 1 FROM audit WHERE action='sso_rejected'`));
+
+  // Unverified email, wrong nonce, inactive account, and an account in another program are all refused.
+  ({ state, nonce, browser } = await googleStart());
+  fake.idClaims = { email: 'player@ridgeview.example', email_verified: false, nonce };
+  assert.match((await googleCallback(state, browser)).text, /sso_error=unverified/);
+  ({ state, browser } = await googleStart());
+  fake.idClaims = { email: 'player@ridgeview.example', email_verified: true, nonce: 'other' };
+  assert.match((await googleCallback(state, browser)).text, /sso_error=exchange/);
+  const gone = t.db.insert('users', { program_id: head.user.program_id, name: 'Former Coach', email: 'former@ridgeview.example', role: 'coach', active: 0 });
+  ({ state, nonce, browser } = await googleStart());
+  fake.idClaims = { email: 'former@ridgeview.example', email_verified: true, nonce };
+  assert.match((await googleCallback(state, browser)).text, /sso_error=no_account/);
+  void gone;
+  const otherHead = t.db.get(`SELECT email FROM users WHERE email LIKE 'head%@other.example' LIMIT 1`);
+  ({ state, nonce, browser } = await googleStart());
+  fake.idClaims = { email: otherHead.email, email_verified: true, nonce };
+  assert.match((await googleCallback(state, browser)).text, /sso_error=no_account/);
+  // Cancelled at Google.
+  ({ state, browser } = await googleStart());
+  assert.match((await rawReq('GET', `/api/auth/google/callback?error=access_denied&state=${state}`, { cookie: `pm_sso=${browser}` })).text, /sso_error=access_denied/);
+});
+
+test('Google Workspace for Education domain restriction (hd)', async () => {
+  assert.equal((await head.put('/api/google/setup/google', { hd: '@Ridgeview.example' })).body.google.hd, 'ridgeview.example');
+  let { u, state, nonce, browser } = await googleStart();
+  assert.equal(u.searchParams.get('hd'), 'ridgeview.example');
+  // A personal account with the same address but no hosted domain claim is refused.
+  fake.idClaims = { email: 'player@ridgeview.example', email_verified: true, nonce };
+  assert.match((await googleCallback(state, browser)).text, /sso_error=domain/);
+  ({ state, nonce, browser } = await googleStart());
+  fake.idClaims = { email: 'player@ridgeview.example', email_verified: true, nonce, hd: 'otherschool.example' };
+  assert.match((await googleCallback(state, browser)).text, /sso_error=domain/);
+  ({ state, nonce, browser } = await googleStart());
+  fake.idClaims = { email: 'player@ridgeview.example', email_verified: true, nonce, hd: 'ridgeview.example' };
+  assert.ok(cookieVal((await googleCallback(state, browser)).cookies, 'sid'));
+  await head.put('/api/google/setup/google', { hd: '' });
+});
+
+test('Clever sign-in: configured in the app, matched by email, secret never returned', async () => {
+  assert.equal((await head.put('/api/google/setup/clever', { sso: true })).status, 400, 'needs credentials first');
+  const r = await head.put('/api/google/setup/clever', { client_id: 'clever-id', client_secret: 'clever-secret', sso: true });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.clever.configured, true);
+  assert.ok(!JSON.stringify(r.body).includes('clever-secret'));
+  assert.equal((await head.post('/api/google/setup/clever/check')).body.ok, true);
+  assert.equal((await t.anon.get('/api/auth/sso/providers')).body.clever.length, 1);
+  const s = await rawReq('POST', '/api/auth/sso/clever/start', { body: {} });
+  const u = new URL(s.json.url);
+  assert.match(u.pathname, /\/clever\/authorize$/);
+  assert.equal(u.searchParams.get('client_id'), 'clever-id');
+  assert.equal(u.searchParams.get('redirect_uri'), 'https://pm.example.com/api/auth/clever/callback');
+  const browser = cookieVal(s.cookies, 'pm_sso');
+  fake.cleverEmail = 'player@ridgeview.example';
+  const cb = await rawReq('GET', `/api/auth/clever/callback?code=clever-code&state=${u.searchParams.get('state')}`, { cookie: `pm_sso=${browser}` });
+  const sid = cookieVal(cb.cookies, 'sid');
+  assert.ok(sid, cb.text);
+  assert.equal((await t.client(sid).get('/api/me')).body.user.email, 'player@ridgeview.example');
+  // Unknown Clever user.
+  const s2 = await rawReq('POST', '/api/auth/sso/clever/start', { body: {} });
+  fake.cleverEmail = 'nobody@district.example';
+  const cb2 = await rawReq('GET', `/api/auth/clever/callback?code=clever-code&state=${new URL(s2.json.url).searchParams.get('state')}`, { cookie: `pm_sso=${cookieVal(s2.cookies, 'pm_sso')}` });
+  assert.match(cb2.text, /sso_error=no_account/);
+});
+
+test('desktop hand-off: sign-in and connect finish in the system browser and complete in the app', async () => {
+  const s = await rawReq('POST', '/api/auth/sso/google/start', { body: { desktop: true } });
+  assert.equal(s.status, 200);
+  const { handoff, code } = s.json;
+  assert.ok(handoff.length >= 30 && /^[A-Z2-9]{4}$/.test(code));
+  assert.equal(cookieVal(s.cookies, 'pm_sso'), null, 'no browser cookie: the browser is a different program');
+  const u = new URL(s.json.url);
+  assert.deepEqual((await t.anon.post('/api/auth/handoff', { handoff })).body, { status: 'pending', code });
+  fake.idClaims = { email: 'parent@ridgeview.example', email_verified: true, nonce: u.searchParams.get('nonce') };
+  const page = await googleCallback(u.searchParams.get('state'), null);
+  assert.match(page.text, /You are signed in/);
+  assert.match(page.text, new RegExp(code));
+  assert.equal(cookieVal(page.cookies, 'sid'), null, 'the browser gets no session');
+  const done = await t.anon.post('/api/auth/handoff', { handoff });
+  assert.equal(done.body.status, 'done');
+  assert.equal((await t.client(done.body.token).get('/api/me')).body.user.email, 'parent@ridgeview.example');
+  assert.equal((await t.anon.post('/api/auth/handoff', { handoff })).body.status, 'expired', 'single use');
+  assert.equal((await t.anon.post('/api/auth/handoff', { handoff: 'x'.repeat(40) })).body.status, 'expired');
+  assert.equal((await t.anon.post('/api/auth/handoff', {})).status, 400);
+  // A refused desktop sign-in reports the reason to the app.
+  const s2 = await rawReq('POST', '/api/auth/sso/google/start', { body: { desktop: true } });
+  const u2 = new URL(s2.json.url);
+  fake.idClaims = { email: 'nobody@gmail.example', email_verified: true, nonce: u2.searchParams.get('nonce') };
+  assert.match((await googleCallback(u2.searchParams.get('state'), null)).text, /did not finish/);
+  const e2 = (await t.anon.post('/api/auth/handoff', { handoff: s2.json.handoff })).body;
+  assert.equal(e2.status, 'error');
+  assert.match(e2.message, /No Program Manager account/);
+
+  // Connect from the desktop app: the browser has no app session; the hand-off ties the result to the user.
+  const c = await dc.post('/api/google/connect', { features: ['calendar'], desktop: true });
+  assert.ok(c.body.handoff);
+  const cu = new URL(c.body.url);
+  fake.grantScope = cu.searchParams.get('scope');
+  const cpage = await t.anon.get(`/api/google/callback?code=good-code&state=${cu.searchParams.get('state')}`);
+  assert.match(cpage.body, /Google is connected/);
+  assert.equal((await t.anon.post('/api/auth/handoff', { handoff: c.body.handoff })).body.status, 'done');
+  assert.deepEqual((await dc.get('/api/google/status')).body.connection.features, ['calendar']);
+  // A desktop state cannot be replayed.
+  assert.match((await t.anon.get(`/api/google/callback?code=good-code&state=${cu.searchParams.get('state')}`)).body, /google_error=signed_out/);
+  t.db.run('DELETE FROM google_accounts WHERE user_id=?', dc.id);
 });
 
 // ---------- disconnect ----------

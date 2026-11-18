@@ -204,8 +204,9 @@ test('playbooks and formations', async () => {
   assert.equal(f.status, 200);
   assert.ok((await head.get('/api/formations')).body.some((x) => x.name === 'Empty'));
   assert.equal((await player.get('/api/formations')).status, 403);
+  // v2 (PB-6): deleting a playbook deletes the plays inside it
   await head.del(`/api/playbooks/${b.body.id}`);
-  assert.equal(t.db.get('SELECT playbook_id FROM plays WHERE id=?', playId).playbook_id, null);
+  assert.equal(t.db.get('SELECT 1 FROM plays WHERE id=?', playId), undefined);
   const facets = await head.get('/api/playbook/facets');
   assert.ok(facets.body.folders.includes('Quick'));
 });

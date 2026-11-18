@@ -1,6 +1,8 @@
 // Demo data: one program, three levels, ~20 coaches, ~95 players with parents and a season of activity.
 import { hashPassword, token, nowLocal, today, addDays, addMinutes, parseLocal, fmtLocal, DEFAULT_SETTINGS } from './core.js';
 import { fileURLToPath } from 'node:url';
+import { seedFootball } from './seed-football.js';
+import { seedWeightRoom } from './strength-seed.js';
 
 let s = 42;
 const rnd = () => { s = (s * 1103515245 + 12345) % 2147483648; return s / 2147483648; };
@@ -484,6 +486,10 @@ export function seed(db) {
       db.insert('audit', { program_id: pid, user_id: staff.at, action: 'set_availability', entity: 'player', entity_id: p.id, detail: JSON.stringify({ availability: 'limited', return_date: addDays(day, 5) }), at: `${addDays(day, -1)} 16:10` });
     }
     db.insert('notifications', { user_id: staff.head, kind: 'update', title: 'Welcome to Program Manager', body: 'Demo data is loaded. Sign in as any role from the sign-in page.', created_at: nowLocal(), deliver_at: nowLocal() });
+    // v2 football operations demo data (server/seed-football.js)
+    seedFootball(db, { pid, staff, players, demoQB, demoParent, seasonId, tV, tJR, tJB, tF, year });
+    // v2 weight room demo data (server/strength-seed.js)
+    seedWeightRoom(db, { pid, staff, players, vPlayers, teams: { tV, tJR, tJB, tF }, levels: { varsity, jv, fr }, wtA, wtProg, monday, day, rnd, int, pick });
   });
 }
 

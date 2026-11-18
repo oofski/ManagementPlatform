@@ -1,14 +1,26 @@
 // Module 3: Playbook and play designer — plays stored as structured data (positions, paths, timing),
 // formations, playbooks/folders/tags, version history, audience delivery, view-only security with
 // view log and watermark identity, install sheets, knowledge checks and game-mode rules.
+// v2 (docs/requirements-v2-playbook.md): playbooks own their plays (a play needs a playbook; deleting a playbook
+// deletes its plays), play tags as checkboxes (situation), "(Copy)" duplicates and Duplicate to Playbook, formation
+// management with a configurable cap. Positions, custom routes, preferences and the play call log are in playbook-v2.js.
 import { fail, need, nowLocal } from '../core.js';
 import { j, jAll } from '../db.js';
+import playbookV2, { cleanSituation } from './playbook-v2.js';
 
 export default function playbook(ctx) {
   const { router, db, core } = ctx;
   const { can, isStaff, isAdmin, audit, notify } = core;
 
-  const playOf = (pid, id) => j(db.get('SELECT * FROM plays WHERE id=? AND program_id=?', id, pid), 'tags', 'data', 'assignments');
+  const playOf = (pid, id) => j(db.get('SELECT * FROM plays WHERE id=? AND program_id=?', id, pid), 'tags', 'data', 'assignments', 'situation');
+  // Legacy plays saved before playbooks were required get a home so every play lives inside a playbook.
+  function homeOrphans(pid) {
+    if (!db.get('SELECT 1 FROM plays WHERE program_id=? AND playbook_id IS NULL LIMIT 1', pid)) return;
+    let b = db.get(`SELECT id FROM playbooks WHERE program_id=? AND name='Unsorted plays'`, pid);
+    const id = b ? b.id : db.insert('playbooks', { program_id: pid, name: 'Unsorted plays', description: 'Plays saved before they belonged to a playbook' });
+    db.run('UPDATE plays SET playbook_id=? WHERE program_id=? AND playbook_id IS NULL', id, pid);
+  }
+  const bookIn = (pid, id) => db.get('SELECT * FROM playbooks WHERE id=? AND program_id=?', Number(id), pid);
 
   // Which plays can a non-staff user see? Shares (play or playbook) and install sheets addressed to them.
   function visiblePlayIds(u) {
@@ -48,7 +60,9 @@ export default function playbook(ctx) {
     const s = core.settings(user.program_id);
     const program = db.get('SELECT state FROM programs WHERE id=?', user.program_id);
     return {
-      game_mode: s.game_mode, state: program.state, can_edit: can(user, 'playbook.edit'), can_export: can(user, 'playbook.export'),
+      game_mode: s.game_mode, state: program.state, can_edit: can(user, 'playbook.edit'), can_export: user.role !== 'player' && user.role !== 'parent' && can(user, 'playbook.export'),
+      formation_limit: s.formation_limit || null, is_admin: isAdmin(user),
+      dc_mode: !!db.get('SELECT dc_mode FROM pb_prefs WHERE user_id=?', user.id)?.dc_mode,
       watermark: `${user.name} · ${nowLocal().replace('T', ' ')}`,
       game_mode_note: {
         sideline: 'Sideline use allowed by your program setting. Do not show tablets to players inside the 9-yard marks (NFHS).',
@@ -65,25 +79,47 @@ export default function playbook(ctx) {
       return db.all('SELECT * FROM playbooks WHERE program_id=? ORDER BY name', user.program_id).filter((b) => db.all('SELECT id FROM plays WHERE playbook_id=?', b.id).some((p) => ids.has(p.id)));
     }
     need(can(user, 'playbook.view'), 403, 'No playbook access');
-    return db.all('SELECT b.*, (SELECT count(*) FROM plays WHERE playbook_id=b.id) play_count FROM playbooks b WHERE program_id=? ORDER BY name', user.program_id);
+    homeOrphans(user.program_id);
+    return db.all(`SELECT b.*, (SELECT count(*) FROM plays WHERE playbook_id=b.id) play_count,
+      (SELECT count(*) FROM plays WHERE playbook_id=b.id AND side='offense') offense_count,
+      (SELECT count(*) FROM plays WHERE playbook_id=b.id AND side='defense') defense_count,
+      (SELECT count(*) FROM plays WHERE playbook_id=b.id AND side='special') special_count,
+      (SELECT max(updated_at) FROM plays WHERE playbook_id=b.id) last_edit
+      FROM playbooks b WHERE program_id=? ORDER BY name`, user.program_id);
+  });
+  router.get('/api/playbooks/:id', ({ user, params }) => {
+    need(isStaff(user) && can(user, 'playbook.view'), 403, 'No playbook access');
+    const b = bookIn(user.program_id, params.id);
+    need(b, 404, 'Playbook not found');
+    return { ...b, play_count: db.get('SELECT count(*) n FROM plays WHERE playbook_id=?', b.id).n };
   });
   router.post('/api/playbooks', ({ user, body }) => {
-    requireEdit(user); need(body.name, 400, 'Name is required');
-    const id = db.insert('playbooks', { program_id: user.program_id, name: body.name, side: body.side || null, description: body.description || null });
+    requireEdit(user); need(String(body.name || '').trim(), 400, 'Name is required');
+    const id = db.insert('playbooks', { program_id: user.program_id, name: String(body.name).trim().slice(0, 120), side: body.side || null, description: body.description || null });
     audit(user, 'create', 'playbook', id);
     return { id };
   });
   router.put('/api/playbooks/:id', ({ user, params, body }) => {
     requireEdit(user);
-    need(db.get('SELECT 1 FROM playbooks WHERE id=? AND program_id=?', Number(params.id), user.program_id), 404, 'Not found');
-    db.update('playbooks', Number(params.id), { ...(body.name && { name: body.name }), ...(body.description !== undefined && { description: body.description }) });
+    need(bookIn(user.program_id, params.id), 404, 'Not found');
+    if (body.name !== undefined) need(String(body.name).trim(), 400, 'Name is required');
+    db.update('playbooks', Number(params.id), { ...(body.name && { name: String(body.name).trim().slice(0, 120) }), ...(body.description !== undefined && { description: body.description }) });
+    audit(user, 'edit', 'playbook', Number(params.id));
     return { ok: true };
   });
+  // PB-6: deleting a playbook deletes every play inside it (the UI warns first).
   router.del('/api/playbooks/:id', ({ user, params }) => {
     requireEdit(user);
-    db.run('UPDATE plays SET playbook_id=NULL WHERE playbook_id=? AND program_id=?', Number(params.id), user.program_id);
-    db.run('DELETE FROM playbooks WHERE id=? AND program_id=?', Number(params.id), user.program_id);
-    return { ok: true };
+    const b = bookIn(user.program_id, params.id);
+    need(b, 404, 'Playbook not found');
+    const ids = db.all('SELECT id FROM plays WHERE playbook_id=? AND program_id=?', b.id, user.program_id).map((r) => r.id);
+    db.tx(() => {
+      for (const id of ids) { db.run('DELETE FROM play_shares WHERE play_id=? AND program_id=?', id, user.program_id); db.run('DELETE FROM plays WHERE id=?', id); }
+      db.run('DELETE FROM play_shares WHERE playbook_id=? AND program_id=?', b.id, user.program_id);
+      db.run('DELETE FROM playbooks WHERE id=?', b.id);
+    });
+    audit(user, 'delete', 'playbook', b.id, { name: b.name, plays_deleted: ids.length });
+    return { ok: true, plays_deleted: ids.length };
   });
 
   // ---------- formations ----------
@@ -91,9 +127,42 @@ export default function playbook(ctx) {
     need(can(user, 'playbook.view'), 403, 'No playbook access');
     return jAll(db.all('SELECT * FROM formations WHERE program_id=? ORDER BY side, name', user.program_id), 'data');
   });
+  // FM-3: the head coach caps saved formations (25 / 250 / unlimited).
+  function formationRoom(user) {
+    const limit = core.settings(user.program_id).formation_limit;
+    if (!limit) return;
+    const n = db.get('SELECT count(*) n FROM formations WHERE program_id=?', user.program_id).n;
+    need(n < Number(limit), 400, `Your program allows ${limit} saved formations. Delete one or ask the head coach to raise the limit.`);
+  }
+  const formationOf = (pid, id) => j(db.get('SELECT * FROM formations WHERE id=? AND program_id=?', Number(id), pid), 'data');
+  router.get('/api/formations/:id', ({ user, params }) => {
+    need(can(user, 'playbook.view'), 403, 'No playbook access');
+    const f = formationOf(user.program_id, params.id);
+    need(f, 404, 'Formation not found');
+    return f;
+  });
   router.post('/api/formations', ({ user, body }) => {
-    requireEdit(user); need(body.name && body.data, 400, 'Name and players are required');
-    const id = db.insert('formations', { program_id: user.program_id, name: body.name, side: body.side || 'offense', data: body.data });
+    requireEdit(user); need(String(body.name || '').trim() && Array.isArray(body.data), 400, 'Name and players are required');
+    formationRoom(user);
+    const id = db.insert('formations', { program_id: user.program_id, name: String(body.name).trim().slice(0, 120), side: body.side === 'defense' ? 'defense' : 'offense', data: body.data });
+    audit(user, 'create', 'formation', id);
+    return { id };
+  });
+  router.put('/api/formations/:id', ({ user, params, body }) => {
+    requireEdit(user);
+    const f = formationOf(user.program_id, params.id);
+    need(f, 404, 'Formation not found');
+    if (body.name !== undefined) need(String(body.name).trim(), 400, 'Name is required');
+    if (body.data !== undefined) need(Array.isArray(body.data), 400, 'Formation needs a players list');
+    db.update('formations', f.id, { ...(body.name && { name: String(body.name).trim().slice(0, 120) }), ...(body.data && { data: body.data }) });
+    return { ok: true };
+  });
+  router.post('/api/formations/:id/duplicate', ({ user, params }) => {
+    requireEdit(user);
+    const f = formationOf(user.program_id, params.id);
+    need(f, 404, 'Formation not found');
+    formationRoom(user);
+    const id = db.insert('formations', { program_id: user.program_id, name: `${f.name} (Copy)`, side: f.side, data: f.data });
     return { id };
   });
   router.del('/api/formations/:id', ({ user, params }) => {
@@ -104,16 +173,18 @@ export default function playbook(ctx) {
 
   // ---------- plays ----------
   function listShape(p) {
-    return { id: p.id, name: p.name, side: p.side, formation: p.formation, folder: p.folder, tags: p.tags, playbook_id: p.playbook_id, version: p.version, updated_at: p.updated_at, updated_by_name: p.updated_by_name, data: p.data };
+    return { id: p.id, name: p.name, side: p.side, formation: p.formation, folder: p.folder, tags: p.tags, situation: p.situation || {}, playbook_id: p.playbook_id, version: p.version, updated_at: p.updated_at, updated_by_name: p.updated_by_name, data: p.data };
   }
   router.get('/api/plays', ({ user, query }) => {
-    let rows = jAll(db.all('SELECT p.*, u.name updated_by_name FROM plays p LEFT JOIN users u ON u.id=p.updated_by WHERE p.program_id=? ORDER BY p.folder, p.name', user.program_id), 'tags', 'data', 'assignments');
+    if (isStaff(user) && can(user, 'playbook.view')) homeOrphans(user.program_id);
+    let rows = jAll(db.all('SELECT p.*, u.name updated_by_name FROM plays p LEFT JOIN users u ON u.id=p.updated_by WHERE p.program_id=? ORDER BY p.folder, p.name', user.program_id), 'tags', 'data', 'assignments', 'situation');
     if (isStaff(user)) need(can(user, 'playbook.view'), 403, 'No playbook access');
     else { const ids = visiblePlayIds(user); rows = rows.filter((p) => ids.has(p.id)); }
     if (query.playbook_id) rows = rows.filter((p) => p.playbook_id === Number(query.playbook_id));
     if (query.side) rows = rows.filter((p) => p.side === query.side);
     if (query.folder) rows = rows.filter((p) => p.folder === query.folder);
     if (query.tag) rows = rows.filter((p) => p.tags.includes(query.tag));
+    for (const k of ['play_type', 'distance', 'down_distance']) if (query[k]) rows = rows.filter((p) => (p.situation?.[k] || []).includes(query[k]));
     if (query.q) { const q = query.q.toLowerCase(); rows = rows.filter((p) => [p.name, p.formation, p.folder, p.tags.join(' '), p.coaching_points].join(' ').toLowerCase().includes(q)); }
     if (!isStaff(user)) return rows.map(listShape).map((p) => ({ ...p, data: { ...p.data, quiz: (p.data?.quiz || []).map(({ answer, ...q }) => q) } }));
     return rows.map(listShape);
@@ -135,13 +206,30 @@ export default function playbook(ctx) {
     for (const k of ['name', 'side', 'formation', 'folder', 'coaching_points', 'video_url']) if (b[k] !== undefined) f[k] = b[k] || null;
     if (b.playbook_id !== undefined) f.playbook_id = b.playbook_id ? Number(b.playbook_id) : null;
     if (b.tags) f.tags = b.tags.map((t) => String(t).trim()).filter(Boolean);
+    if (b.situation !== undefined) f.situation = cleanSituation(b.situation);
     if (b.data) { need(Array.isArray(b.data.players), 400, 'Play data needs a players list'); f.data = b.data; }
     if (b.assignments) f.assignments = b.assignments;
+    if (f.name !== undefined) need(f.name && String(f.name).trim(), 400, 'Name is required');
+    if (f.side !== undefined && !['offense', 'defense', 'special'].includes(f.side)) fail(400, 'Side must be offense, defense or special');
     return f;
+  }
+  // PB-1 / PL-1: a play always lives inside a playbook of this program.
+  function playbookFor(user, id) {
+    if (id === undefined) return undefined;
+    need(id, 400, 'A play must belong to a playbook');
+    need(bookIn(user.program_id, id), 400, 'Unknown playbook');
+    return Number(id);
   }
   router.post('/api/plays', ({ user, body }) => {
     requireEdit(user); need(body.name, 400, 'Name is required');
-    const f = playFields({ data: { players: [] }, ...body });
+    let bookId = playbookFor(user, body.playbook_id);
+    if (bookId === undefined) {
+      // Older clients (and other modules) that do not name a playbook: use the first one; none means create one first.
+      const first = db.get('SELECT id FROM playbooks WHERE program_id=? ORDER BY id LIMIT 1', user.program_id);
+      need(first, 400, 'Create a playbook first. Plays live inside a playbook.');
+      bookId = first.id;
+    }
+    const f = { ...playFields({ data: { players: [] }, ...body }), playbook_id: bookId };
     const id = db.insert('plays', { program_id: user.program_id, side: 'offense', ...f, version: 1, updated_by: user.id, updated_at: nowLocal() });
     db.insert('play_versions', { play_id: id, version: 1, snapshot: db.get('SELECT * FROM plays WHERE id=?', id), by_user: user.id, summary: 'Created' });
     audit(user, 'create', 'play', id);
@@ -155,6 +243,7 @@ export default function playbook(ctx) {
       // Collaboration: someone else saved first. Tell the client so it can reload rather than overwrite silently.
       if (!body.force) fail(409, `This play was changed by someone else (now version ${p.version}). Reload to see their changes.`);
     }
+    playbookFor(user, body.playbook_id);
     const f = playFields(body);
     const version = p.version + 1;
     db.update('plays', p.id, { ...f, version, updated_by: user.id, updated_at: nowLocal() });
@@ -174,13 +263,23 @@ export default function playbook(ctx) {
     need(p, 404, 'Play not found');
     let data = p.data;
     if (body.flip) data = flip(data);
-    const id = db.insert('plays', { program_id: user.program_id, playbook_id: p.playbook_id, name: body.name || `${p.name}${body.flip ? ' (flipped)' : ' copy'}`, side: p.side, formation: p.formation, folder: p.folder, tags: p.tags, data, coaching_points: p.coaching_points, assignments: p.assignments, video_url: p.video_url, version: 1, updated_by: user.id, updated_at: nowLocal() });
+    // PL-3: copies are suffixed "(Copy)"; Duplicate to Playbook names another playbook of this program.
+    const bookId = body.playbook_id !== undefined ? playbookFor(user, body.playbook_id) : p.playbook_id;
+    const id = db.insert('plays', { program_id: user.program_id, playbook_id: bookId, name: body.name || `${p.name}${body.flip ? ' (flipped)' : ' (Copy)'}`, side: p.side, formation: p.formation, folder: p.folder, tags: p.tags, situation: p.situation || {}, data, coaching_points: p.coaching_points, assignments: p.assignments, video_url: p.video_url, version: 1, updated_by: user.id, updated_at: nowLocal() });
     db.insert('play_versions', { play_id: id, version: 1, snapshot: db.get('SELECT * FROM plays WHERE id=?', id), by_user: user.id, summary: `Copied from ${p.name}` });
+    audit(user, 'duplicate', 'play', id, { from: p.id, playbook_id: bookId });
     return { id };
   });
   function flip(data) {
-    const fx = (pt) => [100 - pt[0], pt[1]];
-    return { ...data, players: data.players.map((pl) => ({ ...pl, x: 100 - pl.x, path: (pl.path || []).map(fx), motion: (pl.motion || []).map(fx) })) };
+    const fx = (pt) => [100 - pt[0], ...pt.slice(1)];
+    const flipOpt = (o) => ({ ...o, from: o.from ? fx(o.from) : o.from, points: (o.points || []).map(fx) });
+    return {
+      ...data,
+      ball: data.ball ? { ...data.ball, x: 100 - data.ball.x } : data.ball,
+      players: data.players.map((pl) => ({ ...pl, x: 100 - pl.x, path: (pl.path || []).map(fx), motion: (pl.motion || []).map(fx), ...(pl.opts && { opts: pl.opts.map(flipOpt) }) })),
+      ...(data.zones && { zones: data.zones.map((z) => ({ ...z, x: 100 - z.x - (z.w || 0) })) }),
+      ...(data.texts && { texts: data.texts.map((t) => ({ ...t, x: 100 - t.x })) }),
+    };
   }
   router.get('/api/plays/:id/versions', ({ user, params }) => {
     need(can(user, 'playbook.view'), 403, 'No playbook access');
@@ -193,9 +292,9 @@ export default function playbook(ctx) {
     need(p, 404, 'Play not found');
     const v = db.get('SELECT * FROM play_versions WHERE play_id=? AND version=?', p.id, Number(body.version));
     need(v, 404, 'Version not found');
-    const snap = j(JSON.parse(v.snapshot), 'tags', 'data', 'assignments');
+    const snap = j(JSON.parse(v.snapshot), 'tags', 'data', 'assignments', 'situation');
     const version = p.version + 1;
-    db.update('plays', p.id, { name: snap.name, data: snap.data, tags: snap.tags, assignments: snap.assignments, coaching_points: snap.coaching_points, formation: snap.formation, version, updated_by: user.id, updated_at: nowLocal() });
+    db.update('plays', p.id, { name: snap.name, data: snap.data, tags: snap.tags, situation: snap.situation || {}, assignments: snap.assignments, coaching_points: snap.coaching_points, formation: snap.formation, version, updated_by: user.id, updated_at: nowLocal() });
     db.insert('play_versions', { play_id: p.id, version, snapshot: db.get('SELECT * FROM plays WHERE id=?', p.id), by_user: user.id, summary: `Restored version ${v.version}` });
     audit(user, 'restore', 'play', p.id, { version: v.version });
     return { ok: true, version };
@@ -207,7 +306,7 @@ export default function playbook(ctx) {
   });
   // PLAY-7: export only when the head coach allows it, watermarked and logged.
   router.get('/api/plays/:id/export', ({ user, params }) => {
-    need(can(user, 'playbook.export'), 403, 'Exporting plays is turned off by the head coach');
+    need(isStaff(user) && can(user, 'playbook.export'), 403, 'Exporting plays is turned off by the head coach');
     const p = playOf(user.program_id, Number(params.id));
     need(p, 404, 'Play not found');
     audit(user, 'export', 'play', p.id);
@@ -320,4 +419,6 @@ export default function playbook(ctx) {
       formations: [...new Set(rows.map((r) => r.formation).filter(Boolean))].sort(),
     };
   });
+
+  playbookV2(ctx, { visiblePlayIds, requireEdit, bookIn, playOf });
 }

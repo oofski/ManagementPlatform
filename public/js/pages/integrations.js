@@ -1,10 +1,17 @@
 // Integrations: connect your own Google account (Gmail, Calendar, Sheets, Docs), review event drafts made from
 // email, choose how program email is delivered, push and import calendars, import and export sheets, export docs.
 import { api } from '../api.js';
-import { html, set, $, on, toast, errToast, formData, options, checked, field, audienceField, wireAudience, fmtDT, ago, empty, confirmDialog, tabs, todayISO, addDaysISO } from '../ui.js';
+import { html, set, $, on, toast, errToast, formData, options, checked, field, audienceField, wireAudience, fmtDT, ago, empty, tabs, todayISO, addDaysISO } from '../ui.js';
+import { connection, setup } from './integrations-setup.js';
 
 const TYPES = [['game', 'Game'], ['practice', 'Practice'], ['lift', 'Lift'], ['film', 'Film'], ['meeting', 'Staff meeting'], ['social', 'Team event'], ['other', 'Other']];
-const TABS = [['connection', 'Connection'], ['gmail', 'Gmail'], ['calendar', 'Calendar'], ['sheets', 'Sheets'], ['docs', 'Docs']];
+const TABS = [['connection', 'Connection'], ['gmail', 'Gmail'], ['calendar', 'Calendar'], ['sheets', 'Sheets'], ['docs', 'Docs'], ['setup', 'Setup']];
+// Disables a button and shows what is happening while fn runs.
+async function busy(btn, label, fn) {
+  const was = btn.innerHTML;
+  btn.disabled = true; btn.textContent = label;
+  try { return await fn(); } finally { btn.disabled = false; btn.innerHTML = was; }
+}
 const ERRORS = {
   state: 'The sign-in link expired or did not match this session. Try connecting again.',
   signed_out: 'You were signed out during the Google sign-in. Sign in and try again.',
@@ -19,20 +26,27 @@ const resultNotice = (r, what) => html`<div class="notice ok">${what} created. $
 
 export default async function integrations(el, ctx) {
   if (!ctx.me.caps.staff) { set(el, html`<div class="notice">Only staff can connect Google accounts.</div>`); return; }
-  const tab = TABS.some(([k]) => k === ctx.query.tab) ? ctx.query.tab : 'connection';
   const st = await api.get('/api/google/status');
+  const visible = TABS.filter(([k]) => k !== 'setup' || st.is_admin);
+  const tab = visible.some(([k]) => k === ctx.query.tab) ? ctx.query.tab : (!st.configured && st.is_admin ? 'setup' : 'connection');
   const flash = ctx.query.google === 'connected' ? html`<div class="notice ok">Google is connected.</div>`
     : ctx.query.google_error ? html`<div class="notice bad">${ERRORS[ctx.query.google_error] || `Google sign-in failed (${ctx.query.google_error}).`}</div>` : '';
   set(el, html`<div class="page-head"><div><h1>Integrations</h1><div class="sub">Connect your own Google account. Nothing is shared with other staff, and you can disconnect at any time.</div></div></div>
-    ${tabs(TABS.map(([k, label]) => [k, k === 'gmail' && st.pending_drafts ? `${label} (${st.pending_drafts})` : label, `/settings/integrations?tab=${k}`]), tab)}
+    ${tabs(visible.map(([k, label]) => [k, k === 'gmail' && st.pending_drafts ? `${label} (${st.pending_drafts})` : label, `/settings/integrations?tab=${k}`]), tab)}
     ${flash}
-    ${!st.configured && tab !== 'connection' ? html`<div class="notice warn">${st.message}</div>` : ''}
+    ${!st.configured && !['connection', 'setup'].includes(tab) ? html`<div class="notice warn">${st.is_admin ? html`Google is not set up yet. <a href="/settings/integrations?tab=setup">Set it up</a>` : 'Google is not set up yet. Ask your head coach to set it up under Integrations › Setup.'}</div>` : ''}
     <div id="tab"></div>`);
   const box = $('#tab', el);
   const has = (f) => !!st.connection?.features.includes(f);
-  const needFeature = (f, label) => (st.configured && !has(f) ? html`<div class="notice">${st.connection ? `Your connection does not include ${label}.` : 'Connect your Google account first.'} <a href="/settings/integrations?tab=connection">Go to Connection</a></div>` : '');
+  const needFeature = (f, label) => {
+    if (!st.configured || has(f)) return '';
+    const c = st.connection;
+    const msg = !c ? 'Connect your Google account to use this.' : c.granted.includes(f) ? `${label} is turned off for your connection.` : `Your connection does not include ${label} yet.`;
+    return html`<div class="card"><div class="bd"><div class="empty">${msg} <a href="/settings/integrations?tab=connection">${c ? `Turn on ${label}` : 'Connect Google'}</a></div></div></div>`;
+  };
   try {
-    if (tab === 'connection') return connection(box, st);
+    if (tab === 'setup') return await setup(box, ctx);
+    if (tab === 'connection') return connection(box, st, ctx);
     if (tab === 'gmail') return await gmail(box, ctx, st, has('gmail'), needFeature('gmail', 'Gmail'));
     if (tab === 'calendar') return await calendar(box, ctx, st, has('calendar'), needFeature('calendar', 'Google Calendar'));
     if (tab === 'sheets') return sheets(box, ctx, st, has('sheets'), needFeature('sheets', 'Google Sheets'));
@@ -40,46 +54,7 @@ export default async function integrations(el, ctx) {
   } catch (e) { set(box, html`<div class="notice bad">${e.message}</div>`); }
 }
 
-// ---------- Connection ----------
-function connection(box, st) {
-  const c = st.connection;
-  const setup = !st.configured ? html`<div class="card"><div class="hd"><h2>Set up Google on the server</h2></div><div class="bd">
-    <div class="notice warn">${st.message}</div>
-    <ol>
-      <li>Create a Google Cloud project and enable the Gmail, Google Calendar, Google Sheets, Google Docs and Google Drive APIs.</li>
-      <li>Configure the OAuth consent screen (Testing mode, with your staff added as test users).</li>
-      <li>Create an OAuth client of type Web application with the authorized redirect URI <b>${st.redirect_uri || 'https://<your-app>.onrender.com/api/google/callback'}</b>.</li>
-      <li>Set these environment variables on the server: ${st.missing.map((m, i) => html`${i ? ', ' : ''}<b>${m}</b>`)}${st.token_key_set ? '' : html`, and <b>TOKEN_KEY</b>`}. Then restart.</li>
-    </ol>
-    <div class="help">The full walkthrough is in docs/google-setup.md in the app's repository.</div></div></div>` : '';
-  set(box, html`${setup}
-  <div class="card"><div class="hd"><h2>Your Google account</h2>${c ? html`<span class="badge ok">Connected</span>` : html`<span class="badge">Not connected</span>`}</div><div class="bd">
-    ${c ? html`<p><b>${c.email || 'Google account'}</b> · connected ${ago(c.connected_at)}</p>
-      <p>${c.features.length ? c.features.map((f) => html`<span class="badge blue">${st.features.find((x) => x.key === f)?.label || f}</span> `) : html`<span class="muted">No features granted.</span>`}</p>
-      ${c.last_error ? html`<div class="notice bad">Last problem: ${c.last_error}</div>` : ''}` : html`<p class="muted">Pick what the app may use. Google only asks for access to the features you tick.</p>`}
-    ${st.configured && !st.token_key_set ? html`<div class="notice warn">TOKEN_KEY is not set on the server. Tokens are encrypted with a key file next to the database; set TOKEN_KEY for production.</div>` : ''}
-    <form id="cf">
-      ${st.features.map((f) => html`<div class="field"><label class="check"><input type="checkbox" name="features" data-multi value="${f.key}" ${checked(c ? c.features.includes(f.key) : f.key === 'gmail')} ${st.configured ? '' : 'disabled'}> ${f.label}</label><div class="help">${f.help}</div></div>`)}
-    </form>
-    <div class="row">
-      <button class="primary" id="connect" ${st.configured ? '' : 'disabled'}>${c ? 'Update Google access' : 'Connect Google'}</button>
-      ${c ? html`<button id="disconnect">Disconnect</button>` : ''}
-    </div>
-    <div class="help">Gmail access is used to read emails with your chosen label, add an "Imported" label, and (only if the head coach picks your account and you agree) send program email.</div>
-  </div></div>`);
-  const btn = $('#connect', box);
-  if (btn) btn.onclick = async () => {
-    const f = formData($('#cf', box));
-    if (!f.features || !f.features.length) return toast('Tick at least one feature', 'bad');
-    btn.disabled = true;
-    try { const r = await api.post('/api/google/connect', { features: f.features }); location.href = r.url; } catch (e) { errToast(e); btn.disabled = false; }
-  };
-  const dis = $('#disconnect', box);
-  if (dis) dis.onclick = async () => {
-    if (!(await confirmDialog('Disconnect Google? The app stops reading your email and calendars, and Google revokes its access. Drafts already queued stay here.', { ok: 'Disconnect', danger: true }))) return;
-    try { await api.post('/api/google/disconnect'); toast('Google disconnected'); window.__navigate('/settings/integrations?tab=connection'); } catch (e) { errToast(e); }
-  };
-}
+// ---------- Connection and Setup: see integrations-setup.js ----------
 
 // ---------- Gmail ----------
 async function gmail(box, ctx, st, ok, missing) {
@@ -109,15 +84,22 @@ async function gmail(box, ctx, st, ok, missing) {
       <div class="field"><label class="check"><input type="checkbox" name="allow_program_send" ${checked(c.allow_program_send)}> The head coach may send program email from my Gmail</label></div>
       </form>
       <div class="row"><button id="save-gs">Save</button><button class="primary" id="scan">Scan now</button><button id="peek">Show recent emails</button></div>
-      ${c.last_scan_at ? html`<div class="help">Last checked ${ago(c.last_scan_at)}.</div>` : ''}
+      <div class="help">${c.last_scan_at ? `Last checked ${ago(c.last_scan_at)}.` : 'Not checked yet.'}${c.auto_scan ? ' New emails are checked every 10 minutes.' : ''}</div>
+      <div id="scan-out"></div>
       <div id="peek-out"></div>` : html`<p class="muted">Connect Gmail to turn labeled emails into calendar drafts.</p>`}
     </div></div>
     ${senderCard}
   </div>
-  <div class="card"><div class="hd"><h2>Review queue</h2><span class="badge">${drafts.length} waiting</span></div><div class="bd">
+  <div class="card"><div class="hd"><h2>Review queue</h2><span class="badge" id="draft-count">${drafts.length} waiting</span></div><div class="bd">
     <p class="muted">Each email becomes one or more drafts. Check the details, pick who it is for, then approve to put it on the calendar.</p>
-    <div id="drafts">${drafts.length ? drafts.map((d) => draftCard(d, auds)) : empty('Nothing to review. Scan Gmail or import a Google calendar.')}</div>
+    <div id="approved"></div>
+    <div id="drafts">${drafts.length ? drafts.map((d) => draftCard(d, auds)) : emptyQueue(ok)}</div>
   </div></div>`);
+  const refreshCount = () => {
+    const n = box.querySelectorAll('[data-draft]').length;
+    $('#draft-count', box).textContent = `${n} waiting`;
+    if (!n) set($('#drafts', box), emptyQueue(ok));
+  };
   wireAudience(box);
   const saveGs = $('#save-gs', box);
   if (saveGs) saveGs.onclick = async () => {
@@ -125,23 +107,26 @@ async function gmail(box, ctx, st, ok, missing) {
     try { await api.put('/api/google/gmail/settings', f); toast('Gmail settings saved'); } catch (e) { errToast(e); }
   };
   const scan = $('#scan', box);
-  if (scan) scan.onclick = async () => {
-    scan.disabled = true;
+  if (scan) scan.onclick = () => busy(scan, 'Scanning Gmail…', async () => {
     try {
       const r = await api.post('/api/google/gmail/scan', {});
-      if (r.label_missing) toast(`Gmail label "${c.gmail_label}" was not found. Create it in Gmail or pick another.`, 'warn');
-      toast(`Checked ${r.checked} emails: ${r.drafts_created} new draft${r.drafts_created === 1 ? '' : 's'}`);
-      ctx.reload();
-    } catch (e) { errToast(e); scan.disabled = false; }
-  };
+      const fresh = await api.get('/api/google/drafts');
+      set($('#drafts', box), fresh.length ? fresh.map((d) => draftCard(d, auds)) : emptyQueue(ok));
+      wireAudience(box);
+      refreshCount();
+      set($('#scan-out', box), r.label_missing
+        ? html`<div class="notice warn">Gmail label "${c.gmail_label}" was not found. Create it in Gmail or pick another label above.</div>`
+        : html`<div class="notice ${r.drafts_created ? 'ok' : ''}">Checked ${r.checked} email${r.checked === 1 ? '' : 's'} (${r.new_messages} new): ${r.drafts_created ? `${r.drafts_created} draft${r.drafts_created === 1 ? '' : 's'} added to the review queue below.` : 'no new events found.'}</div>`);
+    } catch (e) { errToast(e); }
+  });
   const peek = $('#peek', box);
-  if (peek) peek.onclick = async () => {
+  if (peek) peek.onclick = () => busy(peek, 'Loading…', async () => {
     try {
       const r = await api.get('/api/google/gmail/messages');
       set($('#peek-out', box), r.messages.length ? html`<ul class="list">${r.messages.map((m) => html`<li><div class="grow"><div class="t">${m.subject || '(no subject)'}</div><div class="s">${m.from} · ${fmtDT(m.received_at)}</div></div>${m.scanned ? html`<span class="badge ok">Scanned</span>` : html`<span class="badge">New</span>`} ${link(m.link, 'Open')}</li>`)}</ul>`
         : html`<div class="empty">${r.label_missing ? `No Gmail label named "${r.label}".` : 'No matching emails in the last 60 days.'}</div>`);
     } catch (e) { errToast(e); }
-  };
+  });
   const ss = $('#save-sender', box);
   if (ss) ss.onclick = async () => {
     const v = $('#sender', box).value;
@@ -155,14 +140,16 @@ async function gmail(box, ctx, st, ok, missing) {
     b.disabled = true;
     try {
       const r = await api.post(`/api/google/drafts/${b.dataset.approve}/approve`, body);
-      toast(r.label_error ? `Added to the calendar (Gmail label not applied: ${r.label_error})` : 'Added to the calendar');
       form.closest('[data-draft]').remove();
+      $('#approved', box).insertAdjacentHTML('beforeend', html`<div class="notice ok">${body.title} added to the calendar. <a href="/calendar/${r.event_id}">Open event</a>${r.label_error ? ` (Gmail label not applied: ${r.label_error})` : r.labeled ? ' · Labeled "Imported" in Gmail' : ''}</div>`.__html);
+      refreshCount();
     } catch (err) { errToast(err); b.disabled = false; }
   });
   on(box, 'click', '[data-dismiss]', async (e, b) => {
-    try { await api.post(`/api/google/drafts/${b.dataset.dismiss}/dismiss`); b.closest('[data-draft]').remove(); toast('Draft dismissed'); } catch (err) { errToast(err); }
+    try { await api.post(`/api/google/drafts/${b.dataset.dismiss}/dismiss`); b.closest('[data-draft]').remove(); toast('Draft dismissed'); refreshCount(); } catch (err) { errToast(err); }
   });
 }
+const emptyQueue = (ok) => empty(ok ? 'Nothing to review. Add the label to schedule emails in Gmail and click Scan now, or import a Google calendar.' : 'Nothing to review.');
 function draftCard(d, auds) {
   const conf = Math.round((d.confidence ?? 0) * 100);
   return html`<div class="card" data-draft="${d.id}"><div class="hd"><h2>${d.subject || d.title}</h2>
@@ -202,20 +189,25 @@ async function calendar(box, ctx, st, ok, missing) {
         ${field('Google calendar', html`<select name="calendar_id">${calOpts(cals)}</select>`)}
         ${field('From', html`<input type="date" name="from" value="${from}">`)}${field('To', html`<input type="date" name="to" value="${addDaysISO(from, 30)}">`)}
       </div></form>
-      <button id="import">Import for review</button>
+      <button id="import">Import for review</button><div id="import-out"></div>
     </div></div></div>` : ''}`);
   const push = $('#push', box);
-  if (push) push.onclick = async () => {
-    push.disabled = true;
+  if (push) push.onclick = () => busy(push, 'Pushing events…', async () => {
     try {
       const r = await api.post('/api/google/calendar/push', formData($('#pf', box)));
-      set($('#push-out', box), html`<div class="notice ${r.errors.length ? 'warn' : 'ok'}">${r.created} added, ${r.updated} updated, ${r.unchanged} unchanged, ${r.removed} removed.${r.errors.length ? ` ${r.errors.length} failed: ${r.errors[0].error}` : ''}</div>`);
-    } catch (e) { errToast(e); } finally { push.disabled = false; }
-  };
+      const total = r.created + r.updated + r.unchanged;
+      set($('#push-out', box), html`<div class="notice ${r.errors.length ? 'warn' : 'ok'}">${total || r.removed ? `${r.created} added, ${r.updated} updated, ${r.unchanged} unchanged, ${r.removed} removed.` : 'No team events in those dates.'}${r.errors.length ? ` ${r.errors.length} failed: ${r.errors[0].error}` : ''} ${link('https://calendar.google.com/calendar/r', 'Open Google Calendar')}</div>`);
+    } catch (e) { errToast(e); }
+  });
   const imp = $('#import', box);
-  if (imp) imp.onclick = async () => {
-    try { const r = await api.post('/api/google/calendar/import', formData($('#if', box))); toast(`${r.drafts_created} draft${r.drafts_created === 1 ? '' : 's'} added to the review queue`); if (r.drafts_created) ctx.navigate('/settings/integrations?tab=gmail'); } catch (e) { errToast(e); }
-  };
+  if (imp) imp.onclick = () => busy(imp, 'Importing…', async () => {
+    try {
+      const r = await api.post('/api/google/calendar/import', formData($('#if', box)));
+      set($('#import-out', box), r.drafts_created
+        ? html`<div class="notice ok">${r.drafts_created} draft${r.drafts_created === 1 ? '' : 's'} added to the review queue${r.skipped ? ` (${r.skipped} skipped: already imported, cancelled or pushed from this app)` : ''}. <a href="/settings/integrations?tab=gmail">Review now</a></div>`
+        : html`<div class="notice">No new events to import${r.skipped ? ` (${r.skipped} already imported, cancelled or pushed from this app)` : ''}.</div>`);
+    } catch (e) { errToast(e); }
+  });
 }
 
 // ---------- Sheets ----------
@@ -243,27 +235,31 @@ function sheets(box, ctx, st, ok, missing) {
       <div class="row"><button data-export="roster">Roster</button><button data-export="attendance">Attendance report</button>${caps['equipment.view'] ? html`<button data-export="equipment">Outstanding equipment</button>` : ''}</div>
       <div id="x-out"></div>
     </div></div></div>` : ''}`);
-  const run = async (btn, path, form, out, render) => {
+  const run = (btn, path, form, out, render) => busy(btn, 'Importing…', async () => {
     const f = formData($(form, box));
-    btn.disabled = true;
-    try { set($(out, box), render(await api.post(path, f))); } catch (e) { errToast(e); } finally { btn.disabled = false; }
-  };
+    if (!f.url) return toast('Paste the Google Sheet link first', 'bad');
+    set($(out, box), html`<div class="notice">Reading the sheet…</div>`);
+    try { set($(out, box), render(await api.post(path, f))); } catch (e) { set($(out, box), html`<div class="notice bad">${e.message}</div>`); }
+  });
   const wire = (id, fn) => { const b = $(id, box); if (b) b.onclick = () => fn(b); };
   wire('#r-imp', (b) => run(b, '/api/google/sheets/roster-import', '#rf', '#r-out', importResult));
   wire('#t-imp', (b) => run(b, '/api/google/sheets/tests-import', '#tf', '#t-out', importResult));
   // Preview buttons send preview: true.
   for (const [id, form, path, out] of [['#r-prev', '#rf', '/api/google/sheets/roster-import', '#r-out'], ['#t-prev', '#tf', '/api/google/sheets/tests-import', '#t-out']]) {
     const b = $(id, box);
-    if (b) b.onclick = async () => { b.disabled = true; try { set($(out, box), previewTable(await api.post(path, { ...formData($(form, box)), preview: true }))); } catch (e) { errToast(e); } finally { b.disabled = false; } };
+    if (b) b.onclick = () => busy(b, 'Reading…', async () => {
+      const f = formData($(form, box));
+      if (!f.url) return toast('Paste the Google Sheet link first', 'bad');
+      try { set($(out, box), previewTable(await api.post(path, { ...f, preview: true }))); } catch (e) { set($(out, box), html`<div class="notice bad">${e.message}</div>`); }
+    });
   }
-  on(box, 'click', '[data-export]', async (e, b) => {
-    b.disabled = true;
+  on(box, 'click', '[data-export]', (e, b) => busy(b, 'Creating spreadsheet…', async () => {
     try {
       const f = formData($('#xf', box));
       const r = await api.post('/api/google/sheets/export', { kind: b.dataset.export, from: f.from || undefined, to: f.to || undefined });
       set($('#x-out', box), resultNotice(r, `Spreadsheet with ${r.rows} row${r.rows === 1 ? '' : 's'}`));
-    } catch (err) { errToast(err); } finally { b.disabled = false; }
-  });
+    } catch (err) { errToast(err); }
+  }));
 }
 
 // ---------- Docs ----------
@@ -273,7 +269,7 @@ async function docs(box, ctx, st, ok, missing) {
   set(box, html`${missing}${ok ? html`<div class="grid g2">
     <div class="card"><div class="hd"><h2>Practice plan</h2></div><div class="bd">
       <p class="muted">Creates a Google Doc with the period table and notes.</p>
-      ${plans.length ? html`${field('Plan', html`<select id="plan">${options(plans.map((p) => [p.id, `${p.event_start ? `${fmtDT(p.event_start)} · ` : ''}${p.name}`]))}</select>`)}<button class="primary" id="plan-x">Export to Google Docs</button>` : empty('No practice plans yet.')}
+      ${plans.length ? html`${field('Plan', html`<select id="plan">${options(plans.map((p) => [p.id, `${p.event_start ? `${fmtDT(p.event_start)} · ` : ''}${p.name}`]))}</select>`)}<button class="primary" id="plan-x">Export to Google Docs</button>` : empty(html`No practice plans yet. <a href="/practice">Create one</a>`)}
       <div id="plan-out"></div>
     </div></div>
     <div class="card"><div class="hd"><h2>Player season report</h2></div><div class="bd">
@@ -285,10 +281,9 @@ async function docs(box, ctx, st, ok, missing) {
   const go = (btnId, selId, path, key, out, what) => {
     const b = $(btnId, box);
     if (!b) return;
-    b.onclick = async () => {
-      b.disabled = true;
-      try { const r = await api.post(path, { [key]: Number($(selId, box).value) }); set($(out, box), resultNotice(r, what)); } catch (e) { errToast(e); } finally { b.disabled = false; }
-    };
+    b.onclick = () => busy(b, 'Creating document…', async () => {
+      try { const r = await api.post(path, { [key]: Number($(selId, box).value) }); set($(out, box), resultNotice(r, what)); } catch (e) { errToast(e); }
+    });
   };
   go('#plan-x', '#plan', '/api/google/docs/practice-plan', 'plan_id', '#plan-out', 'Google Doc');
   go('#player-x', '#player', '/api/google/docs/season-report', 'player_id', '#player-out', 'Season report');

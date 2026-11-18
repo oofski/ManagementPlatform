@@ -349,12 +349,149 @@ CREATE TABLE IF NOT EXISTS gcal_links (
 CREATE TABLE IF NOT EXISTS google_outbox_log (
   outbox_id INTEGER PRIMARY KEY, attempts INTEGER DEFAULT 0, gmail_id TEXT, last_error TEXT, at TEXT
 );
+
+-- v2 football operations (server/modules/football.js)
+CREATE TABLE IF NOT EXISTS fb_join_codes (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  code TEXT NOT NULL UNIQUE, active INTEGER DEFAULT 1, uses INTEGER DEFAULT 0, created_by INTEGER,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS fb_kiosks (
+  id TEXT PRIMARY KEY, program_id INTEGER NOT NULL, event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  pin_hash TEXT NOT NULL, created_by INTEGER, created_at TEXT DEFAULT (datetime('now','localtime')), ended_at TEXT
+);
+CREATE TABLE IF NOT EXISTS fb_docs (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, title TEXT NOT NULL, description TEXT, kind TEXT NOT NULL DEFAULT 'file',
+  url TEXT, data TEXT, filename TEXT, mime TEXT, size INTEGER, audience TEXT DEFAULT '[]', by_user INTEGER,
+  at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS fb_doc_views (
+  doc_id INTEGER NOT NULL REFERENCES fb_docs(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  first_at TEXT, last_at TEXT, count INTEGER DEFAULT 1, PRIMARY KEY (doc_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS fb_season_archive (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, season_id INTEGER, season_name TEXT,
+  player_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, team TEXT, class_year INTEGER, positions TEXT DEFAULT '[]',
+  attendance_rate INTEGER, events INTEGER, tests TEXT DEFAULT '{}', prs TEXT DEFAULT '{}', graduated INTEGER DEFAULT 0,
+  at TEXT DEFAULT (datetime('now','localtime')), UNIQUE (season_id, player_id)
+);
+CREATE TABLE IF NOT EXISTS fb_heat_logs (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, date TEXT NOT NULL, reading_type TEXT DEFAULT 'heat_index', reading REAL,
+  duration_min INTEGER, equipment TEXT, team_id INTEGER, event_id INTEGER, notes TEXT, by_user INTEGER,
+  at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS fb_concussions (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, player_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  injury_date TEXT, stage INTEGER DEFAULT 1, status TEXT DEFAULT 'active', prior_availability TEXT,
+  opened_by INTEGER, opened_at TEXT, closed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS fb_concussion_signoffs (
+  id INTEGER PRIMARY KEY, case_id INTEGER NOT NULL REFERENCES fb_concussions(id) ON DELETE CASCADE, stage INTEGER NOT NULL,
+  signed_by INTEGER, signed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS fb_medical_notes (
+  id INTEGER PRIMARY KEY, case_id INTEGER NOT NULL REFERENCES fb_concussions(id) ON DELETE CASCADE, stage INTEGER, note TEXT NOT NULL,
+  by_user INTEGER, at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS fb_eligibility (
+  player_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, physical_date TEXT, physical_expires TEXT,
+  consent INTEGER DEFAULT 0, emergency_contact INTEGER DEFAULT 0, insurance INTEGER DEFAULT 0, insurance_note TEXT,
+  fees_paid INTEGER DEFAULT 0, fees_note TEXT, academic TEXT, notes TEXT, updated_by INTEGER, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS fb_forms (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT,
+  active INTEGER DEFAULT 1, created_by INTEGER, created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS fb_signatures (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, form_id INTEGER NOT NULL REFERENCES fb_forms(id) ON DELETE CASCADE,
+  player_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, signer_id INTEGER NOT NULL, typed_name TEXT NOT NULL,
+  signature TEXT, data TEXT DEFAULT '{}', ip TEXT, user_agent TEXT, signed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS fb_digest_log (
+  program_id INTEGER NOT NULL, week TEXT NOT NULL, user_id INTEGER NOT NULL, at TEXT DEFAULT (datetime('now','localtime')),
+  PRIMARY KEY (program_id, week, user_id)
+);
+CREATE TABLE IF NOT EXISTS fb_recruiting (
+  player_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, gpa REAL, film_url TEXT, contact_email TEXT, contact_phone TEXT,
+  bio TEXT, status TEXT DEFAULT 'draft', approved_by INTEGER, approved_at TEXT, updated_at TEXT
+);
+
+-- v2 playbook (server/modules/playbook-v2.js): positions, custom routes, per-user preferences, play call log
+CREATE TABLE IF NOT EXISTS pb_positions (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, side TEXT NOT NULL DEFAULT 'O', name TEXT NOT NULL, letter TEXT,
+  color TEXT DEFAULT 'default', abbr TEXT, sort INTEGER DEFAULT 0, is_center INTEGER DEFAULT 0, mirror_id INTEGER, lineman INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS pb_routes (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, name TEXT NOT NULL, side TEXT DEFAULT 'O', grp TEXT DEFAULT 'Custom',
+  data TEXT DEFAULT '{}', smart INTEGER DEFAULT 1, created_by INTEGER, updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS pb_prefs (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, dc_mode INTEGER DEFAULT 0, recent_routes TEXT DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS pb_calls (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, playbook_id INTEGER, play_id INTEGER, play_name TEXT,
+  down INTEGER, distance INTEGER, yard_line TEXT, result TEXT, note TEXT, by_user INTEGER,
+  at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- v2 weight room (server/modules/strength.js, server/strength-data.js)
+CREATE TABLE IF NOT EXISTS wt_library_state (
+  program_id INTEGER NOT NULL, kind TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (program_id, kind)
+);
+CREATE TABLE IF NOT EXISTS exercise_meta (
+  exercise_id INTEGER PRIMARY KEY REFERENCES exercises(id) ON DELETE CASCADE, lib_key TEXT, equipment TEXT, pattern TEXT, custom INTEGER DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS wt_program_meta (
+  wt_program_id INTEGER PRIMARY KEY REFERENCES wt_programs(id) ON DELETE CASCADE, mode TEXT DEFAULT 'dated', kind TEXT DEFAULT 'lift',
+  phase TEXT, position_group TEXT, template_key TEXT, builtin INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS wt_group_overrides (
+  id INTEGER PRIMARY KEY, assignment_id INTEGER NOT NULL REFERENCES wt_assignments(id) ON DELETE CASCADE, group_token TEXT NOT NULL,
+  exercise_id INTEGER, alt_exercise_id INTEGER, sets INTEGER, reps TEXT, pct REAL, rpe REAL, note TEXT, by_user INTEGER
+);
+CREATE TABLE IF NOT EXISTS training_maxes (
+  id INTEGER PRIMARY KEY, player_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, test_key TEXT NOT NULL, value REAL NOT NULL,
+  date TEXT NOT NULL, source TEXT DEFAULT 'session', exercise_id INTEGER, log_id INTEGER, weight REAL, reps INTEGER, prev_value REAL, pr INTEGER DEFAULT 0,
+  at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS training_maxes_player ON training_maxes(player_id, test_key, date);
+CREATE TABLE IF NOT EXISTS test_details (
+  test_id INTEGER PRIMARY KEY REFERENCES tests(id) ON DELETE CASCADE, weight REAL, reps INTEGER, method TEXT
+);
+CREATE TABLE IF NOT EXISTS wt_feed (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, team_id INTEGER, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT,
+  player_id INTEGER, by_user INTEGER, ref TEXT UNIQUE, removed INTEGER DEFAULT 0, removed_by INTEGER,
+  at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS wt_feed_program ON wt_feed(program_id, at);
+CREATE TABLE IF NOT EXISTS wellness (
+  id INTEGER PRIMARY KEY, player_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, date TEXT NOT NULL,
+  sleep_hours REAL, sleep_quality INTEGER, soreness INTEGER, mood INTEGER, stress INTEGER, note TEXT, client_id TEXT,
+  at TEXT DEFAULT (datetime('now','localtime')), UNIQUE (player_id, date)
+);
+CREATE TABLE IF NOT EXISTS wt_composites (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, name TEXT NOT NULL, tests TEXT DEFAULT '[]', created_by INTEGER,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS wt_report_log (
+  program_id INTEGER NOT NULL, week TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'weekly_email', sent INTEGER DEFAULT 0,
+  at TEXT DEFAULT (datetime('now','localtime')), PRIMARY KEY (program_id, week, kind)
+);
 `;
 
 export function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(SCHEMA);
+  // v2 football operations: athlete usernames (join-code sign-in) and one primary position group per athlete.
+  const addCol = (table, col, decl) => {
+    if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
+  };
+  addCol('users', 'username', 'TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_username ON users(lower(username))');
+  addCol('player_profiles', 'primary_group', 'TEXT');
+  // v2 playbook: play tags as structured checkboxes (play type, distance, down & distance).
+  addCol('plays', 'situation', `TEXT DEFAULT '{}'`);
   return wrap(db);
 }
 

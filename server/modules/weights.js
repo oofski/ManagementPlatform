@@ -4,17 +4,24 @@
 import { fail, need, nowLocal, addDays, parseLocal, fmtLocal, today } from '../core.js';
 import { j, jAll } from '../db.js';
 import { csv, csvResponse } from '../app.js';
+import { ensureLibrary, groupOf } from '../strength-data.js';
 
+// F-6 football testing battery. Strength tests accept a rep test (weight x reps -> estimated 1RM by Epley).
+// Height and weight are part of the battery but are stored as measurements (coach-only) and never ranked.
 export const TESTS = {
-  squat: { label: 'Back squat 1RM', unit: 'lb', better: 'higher' },
-  bench: { label: 'Bench press 1RM', unit: 'lb', better: 'higher' },
-  clean: { label: 'Power clean 1RM', unit: 'lb', better: 'higher' },
-  deadlift: { label: 'Deadlift 1RM', unit: 'lb', better: 'higher' },
-  forty: { label: '40-yard dash', unit: 's', better: 'lower' },
-  pro_agility: { label: 'Pro agility (5-10-5)', unit: 's', better: 'lower' },
-  vertical: { label: 'Vertical jump', unit: 'in', better: 'higher' },
-  broad: { label: 'Broad jump', unit: 'in', better: 'higher' },
+  squat: { label: 'Back squat 1RM', unit: 'lb', better: 'higher', group: 'strength', rep_test: true },
+  bench: { label: 'Bench press 1RM', unit: 'lb', better: 'higher', group: 'strength', rep_test: true },
+  clean: { label: 'Power clean 1RM', unit: 'lb', better: 'higher', group: 'strength', rep_test: true },
+  deadlift: { label: 'Deadlift 1RM', unit: 'lb', better: 'higher', group: 'strength', rep_test: true },
+  forty: { label: '40-yard dash', unit: 's', better: 'lower', group: 'speed' },
+  ten_split: { label: '10-yard split', unit: 's', better: 'lower', group: 'speed' },
+  pro_agility: { label: 'Pro agility (5-10-5)', unit: 's', better: 'lower', group: 'agility' },
+  l_drill: { label: 'L-drill (3-cone)', unit: 's', better: 'lower', group: 'agility' },
+  vertical: { label: 'Vertical jump', unit: 'in', better: 'higher', group: 'power' },
+  broad: { label: 'Broad jump', unit: 'in', better: 'higher', group: 'power' },
 };
+export const MEASURES = { height: { label: 'Height', unit: 'in' }, weight: { label: 'Weight', unit: 'lb' } };
+export const epley = (weight, reps) => (Number(reps) <= 1 ? Number(weight) : Math.round(Number(weight) * (1 + Number(reps) / 30)));
 
 export default function weights(ctx) {
   const { router, db, core } = ctx;
@@ -23,20 +30,33 @@ export default function weights(ctx) {
   const playerIn = (u, id) => !!db.get(`SELECT 1 FROM users WHERE id=? AND program_id=? AND role='player'`, id, u.program_id);
   const selfOrStaff = (u, id) => (isStaff(u) && playerIn(u, id)) || core.linkedPlayers(u).includes(id);
 
-  router.get('/api/weights/meta', () => ({ tests: TESTS }));
+  router.get('/api/weights/meta', () => ({ tests: TESTS, measures: MEASURES }));
 
-  // ---------- exercises ----------
-  router.get('/api/exercises', ({ user }) => db.all('SELECT * FROM exercises WHERE program_id=? ORDER BY category, name', user.program_id));
+  // ---------- exercises (C-9: the built-in library is seeded into each program on first use, idempotently) ----------
+  router.get('/api/exercises', ({ user, query }) => {
+    ensureLibrary(db, user.program_id);
+    const where = ['e.program_id=?']; const args = [user.program_id];
+    if (query.q) { where.push('lower(e.name) LIKE ?'); args.push(`%${String(query.q).toLowerCase()}%`); }
+    if (query.category) { where.push('e.category=?'); args.push(query.category); }
+    if (query.equipment) { where.push('m.equipment=?'); args.push(query.equipment); }
+    if (query.custom === '1') where.push('coalesce(m.custom,1)=1');
+    return db.all(`SELECT e.*, m.equipment, m.pattern, coalesce(m.custom,1) custom FROM exercises e LEFT JOIN exercise_meta m ON m.exercise_id=e.id
+      WHERE ${where.join(' AND ')} ORDER BY e.category, e.name`, ...args);
+  });
   router.post('/api/exercises', ({ user, body }) => {
     editor(user); need(body.name, 400, 'Name is required');
     if (body.test_key) need(TESTS[body.test_key], 400, 'Unknown test');
-    return { id: db.insert('exercises', { program_id: user.program_id, name: body.name, category: body.category || null, cues: body.cues || null, video_url: body.video_url || null, test_key: body.test_key || null }) };
+    const id = db.insert('exercises', { program_id: user.program_id, name: body.name, category: body.category || null, cues: body.cues || null, video_url: body.video_url || null, test_key: body.test_key || null });
+    db.insert('exercise_meta', { exercise_id: id, equipment: body.equipment || null, pattern: body.pattern || null, custom: 1 });
+    return { id };
   });
   router.put('/api/exercises/:id', ({ user, params, body }) => {
     editor(user);
     const e = db.get('SELECT * FROM exercises WHERE id=? AND program_id=?', Number(params.id), user.program_id);
     need(e, 404, 'Exercise not found');
+    if (body.test_key) need(TESTS[body.test_key], 400, 'Unknown test');
     db.update('exercises', e.id, Object.fromEntries(['name', 'category', 'cues', 'video_url', 'test_key'].filter((k) => body[k] !== undefined).map((k) => [k, body[k] || null])));
+    if (body.equipment !== undefined) db.run('INSERT INTO exercise_meta (exercise_id, equipment, custom) VALUES (?,?,1) ON CONFLICT(exercise_id) DO UPDATE SET equipment=excluded.equipment', e.id, body.equipment || null);
     return { ok: true };
   });
   router.del('/api/exercises/:id', ({ user, params }) => {
@@ -47,30 +67,52 @@ export default function weights(ctx) {
 
   // ---------- programs ----------
   const progOf = (pid, id) => j(db.get('SELECT * FROM wt_programs WHERE id=? AND program_id=?', id, pid), 'days');
+  // C-8: dated (day N of week W falls on start + (W-1) weeks + (N-1) days) or dateless (work through days in order);
+  // F-5: game_week programs scale volume by days to the next game.
+  const MODES = ['dated', 'dateless', 'game_week'];
+  const metaOf = (id) => ({ mode: 'dated', kind: 'lift', phase: null, position_group: null, template_key: null, builtin: 0, ...(db.get('SELECT mode, kind, phase, position_group, template_key, builtin FROM wt_program_meta WHERE wt_program_id=?', id) || {}) });
+  function saveMeta(id, m) {
+    need(MODES.includes(m.mode || 'dated'), 400, 'Mode must be dated, dateless or game_week');
+    need(['lift', 'conditioning'].includes(m.kind || 'lift'), 400, 'Kind must be lift or conditioning');
+    db.run(`INSERT INTO wt_program_meta (wt_program_id, mode, kind, phase, position_group, template_key, builtin) VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT(wt_program_id) DO UPDATE SET mode=excluded.mode, kind=excluded.kind, phase=excluded.phase, position_group=excluded.position_group, template_key=excluded.template_key, builtin=excluded.builtin`,
+    id, m.mode || 'dated', m.kind || 'lift', m.phase || null, m.position_group || null, m.template_key || null, m.builtin ? 1 : 0);
+  }
   function validDays(days) {
     need(Array.isArray(days), 400, 'Days must be a list');
     for (const d of days) {
       need(Number.isInteger(d.week) && Number.isInteger(d.day) && Array.isArray(d.exercises), 400, 'Each day needs week, day and exercises');
-      for (const x of d.exercises) need(x.exercise_id && Number(x.sets) > 0, 400, 'Each exercise needs an exercise and sets');
+      for (const x of d.exercises) {
+        need(x.exercise_id && Number(x.sets) > 0, 400, 'Each exercise needs an exercise and sets');
+        if (x.rpe != null && x.rpe !== '') need(Number(x.rpe) >= 1 && Number(x.rpe) <= 10, 400, 'RPE must be between 1 and 10');
+        if (x.pct != null && x.pct !== '') need(Number(x.pct) > 0 && Number(x.pct) <= 120, 400, 'Percent of max must be between 1 and 120');
+      }
     }
     return days;
   }
   router.get('/api/wt-programs', ({ user }) => {
     need(isStaff(user), 403, 'Staff only');
-    return jAll(db.all('SELECT p.*, u.name author, (SELECT count(*) FROM wt_assignments WHERE wt_program_id=p.id) assigned FROM wt_programs p LEFT JOIN users u ON u.id=p.created_by WHERE p.program_id=? ORDER BY p.is_template DESC, p.name', user.program_id), 'days');
+    return jAll(db.all(`SELECT p.*, u.name author, (SELECT count(*) FROM wt_assignments WHERE wt_program_id=p.id) assigned,
+      coalesce(m.mode,'dated') mode, coalesce(m.kind,'lift') kind, m.phase, m.position_group, m.template_key, coalesce(m.builtin,0) builtin
+      FROM wt_programs p LEFT JOIN users u ON u.id=p.created_by LEFT JOIN wt_program_meta m ON m.wt_program_id=p.id
+      WHERE p.program_id=? ORDER BY p.is_template DESC, p.name`, user.program_id), 'days');
   });
   router.get('/api/wt-programs/:id', ({ user, params }) => {
     need(isStaff(user), 403, 'Staff only');
     const p = progOf(user.program_id, Number(params.id));
     need(p, 404, 'Program not found');
-    p.assignments = jAll(db.all('SELECT * FROM wt_assignments WHERE wt_program_id=?', p.id), 'audience').map((a) => ({ ...a, audience_labels: core.describeAudience(user.program_id, a.audience) }));
+    p.assignments = jAll(db.all('SELECT * FROM wt_assignments WHERE wt_program_id=?', p.id), 'audience').map((a) => ({ ...a, audience_labels: core.describeAudience(user.program_id, a.audience),
+      group_overrides: db.get('SELECT count(*) n FROM wt_group_overrides WHERE assignment_id=?', a.id).n, athlete_overrides: db.get('SELECT count(*) n FROM wt_overrides WHERE assignment_id=?', a.id).n }));
+    p.meta = metaOf(p.id);
     return p;
   });
   router.post('/api/wt-programs', ({ user, body }) => {
     editor(user); need(body.name, 400, 'Name is required');
     let days = body.days || [];
-    if (body.copy_from) { const src = progOf(user.program_id, Number(body.copy_from)); need(src, 404, 'Source not found'); days = src.days; }
+    let meta = {};
+    if (body.copy_from) { const src = progOf(user.program_id, Number(body.copy_from)); need(src, 404, 'Source not found'); days = src.days; meta = metaOf(src.id); if (!body.weeks) body.weeks = src.weeks; }
     const id = db.insert('wt_programs', { program_id: user.program_id, name: body.name, description: body.description || null, weeks: Number(body.weeks) || 4, days: validDays(days), is_template: body.is_template ? 1 : 0, created_by: user.id });
+    saveMeta(id, { ...meta, template_key: meta.template_key || null, builtin: 0, ...(body.meta || {}) });
     audit(user, 'create', 'wt_program', id);
     return { id };
   });
@@ -84,6 +126,7 @@ export default function weights(ctx) {
     if (body.is_template !== undefined) upd.is_template = body.is_template ? 1 : 0;
     if (body.days) upd.days = validDays(body.days);
     db.update('wt_programs', p.id, upd);
+    if (body.meta) saveMeta(p.id, { ...metaOf(p.id), ...body.meta });
     audit(user, 'edit', 'wt_program', p.id);
     return { ok: true };
   });
@@ -152,44 +195,85 @@ export default function weights(ctx) {
   });
 
   // ---------- resolving a player's workout ----------
-  function maxFor(playerId, testKey) {
-    if (!testKey) return null;
-    const better = TESTS[testKey]?.better === 'lower' ? 'min' : 'max';
-    return db.get(`SELECT ${better}(value) v FROM tests WHERE player_id=? AND test_key=? AND date=(SELECT max(date) FROM tests WHERE player_id=? AND test_key=?)`, playerId, testKey, playerId, testKey).v;
+  // C-15: the max used for % loads is the latest tested max, raised by any training max recorded after that test
+  // (training maxes come from estimated 1RMs of logged sets, see strength.js).
+  function maxInfo(playerId, testKey) {
+    if (!testKey || !TESTS[testKey]) return { tested: null, training: null, max: null };
+    const better = TESTS[testKey].better === 'lower' ? 'min' : 'max';
+    const last = db.get('SELECT max(date) d FROM tests WHERE player_id=? AND test_key=?', playerId, testKey).d;
+    const tested = last ? db.get(`SELECT ${better}(value) v FROM tests WHERE player_id=? AND test_key=? AND date=?`, playerId, testKey, last).v : null;
+    const tm = db.get('SELECT max(value) v FROM training_maxes WHERE player_id=? AND test_key=? AND date>=?', playerId, testKey, last || '0000-00-00').v;
+    const training = tm != null && (tested == null || tm > tested) ? tm : null;
+    return { tested, training, max: training ?? tested };
   }
+  const maxFor = (playerId, testKey) => maxInfo(playerId, testKey).max;
   const round5 = (x) => Math.round(x / 5) * 5;
+  const profileOf = (pid) => j(db.get('SELECT p.*, t.level_id, u.name FROM player_profiles p JOIN users u ON u.id=p.user_id LEFT JOIN teams t ON t.id=p.team_id WHERE p.user_id=?', pid), 'units', 'positions');
+  // Does a player sit inside a group-layer token? (team:, level:, unit:, pos:, group: custom group, pg: football position group)
+  function tokenMatches(prof, tok) {
+    if (!prof) return false;
+    const [k, v] = String(tok).split(':');
+    if (k === 'program') return true;
+    if (k === 'team') return prof.team_id === Number(v);
+    if (k === 'level') return prof.level_id === Number(v);
+    if (k === 'unit') return (prof.units || []).includes(v);
+    if (k === 'pos') return (prof.positions || []).includes(v);
+    if (k === 'pg') return (prof.primary_group || groupOf(prof.positions)) === v;
+    if (k === 'group') return !!db.get('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', Number(v), prof.user_id);
+    return false;
+  }
+  const tokenLabel = (pid, tok) => (String(tok).startsWith('pg:') ? `${tok.slice(3)} group` : core.describeAudience(pid, [tok])[0]);
   function assignmentsFor(playerId, programId) {
-    return jAll(db.all('SELECT a.*, p.name program_name, p.weeks, p.days FROM wt_assignments a JOIN wt_programs p ON p.id=a.wt_program_id WHERE a.program_id=? ORDER BY a.start_date DESC', programId), 'audience', 'days')
+    return jAll(db.all(`SELECT a.*, p.name program_name, p.weeks, p.days, coalesce(m.mode,'dated') mode, coalesce(m.kind,'lift') kind FROM wt_assignments a
+      JOIN wt_programs p ON p.id=a.wt_program_id LEFT JOIN wt_program_meta m ON m.wt_program_id=p.id WHERE a.program_id=? ORDER BY a.start_date DESC`, programId), 'audience', 'days')
       .filter((a) => core.resolvePlayers(programId, a.audience).includes(playerId));
   }
-  function resolveDay(playerId, a, d) {
+  function resolveDay(playerId, a, d, { profile } = {}) {
+    const prof = profile || profileOf(playerId);
     const ov = db.all('SELECT * FROM wt_overrides WHERE assignment_id=? AND player_id=?', a.id, playerId);
+    const gov = db.all('SELECT * FROM wt_group_overrides WHERE assignment_id=? ORDER BY id', a.id).filter((g) => tokenMatches(prof, g.group_token));
     const logs = db.all('SELECT * FROM wt_logs WHERE player_id=? AND assignment_id=? AND week=? AND day=? ORDER BY exercise_id, set_no', playerId, a.id, d.week, d.day);
-    const exercises = d.exercises.map((x) => {
-      const o = ov.find((r) => r.exercise_id === Number(x.exercise_id)) || ov.find((r) => r.exercise_id == null && !r.alt_exercise_id);
-      const exId = o?.alt_exercise_id || Number(x.exercise_id);
+    // F-5: game-week programs scale by days to the player's next game, and swap in the activation lift the day before.
+    const gw = a.mode === 'game_week' && ctx.strength ? ctx.strength.gameWeekFor(prof, dueDate(a, d) || today(), a.program_id) : null;
+    const src = gw?.activation ? ctx.strength.activationExercises(a.program_id) : d.exercises;
+    const pick = (rows, x) => rows.find((r) => r.exercise_id === Number(x.exercise_id)) || rows.find((r) => r.exercise_id == null && !r.alt_exercise_id);
+    const exercises = src.map((x) => {
+      const ao = pick(ov, x); const go = pick(gov, x);
+      const f = (k) => ao?.[k] ?? go?.[k] ?? null;
+      const exId = ao?.alt_exercise_id || go?.alt_exercise_id || Number(x.exercise_id);
       const ex = db.get('SELECT * FROM exercises WHERE id=?', exId) || { name: 'Unknown exercise' };
-      const pct = o?.pct ?? x.pct ?? null;
-      const max = pct ? maxFor(playerId, ex.test_key || db.get('SELECT test_key FROM exercises WHERE id=?', Number(x.exercise_id))?.test_key) : null;
+      let pct = f('pct') ?? x.pct ?? null;
+      let sets = f('sets') ?? Number(x.sets);
+      if (gw && !gw.activation && gw.factor < 1) { sets = Math.max(1, Math.round(sets * gw.factor)); if (pct && gw.pct_drop) pct -= gw.pct_drop; }
+      const info = pct ? maxInfo(playerId, ex.test_key || db.get('SELECT test_key FROM exercises WHERE id=?', Number(x.exercise_id))?.test_key) : { tested: null, training: null, max: null };
       return {
         exercise_id: exId, original_exercise_id: Number(x.exercise_id), name: ex.name, cues: ex.cues, video_url: ex.video_url,
-        sets: o?.sets ?? Number(x.sets), reps: o?.reps ?? x.reps, pct, rest: x.rest || null, note: o?.note || x.note || null,
-        load: pct && max ? round5((pct / 100) * max) : x.load || null, tested_max: max, overridden: !!o,
+        sets, reps: f('reps') ?? x.reps, pct, rpe: f('rpe') ?? x.rpe ?? null, rest: x.rest || null, note: ao?.note || go?.note || x.note || null,
+        load: pct && info.max ? round5((pct / 100) * info.max) : x.load || null, tested_max: info.tested, training_max: info.training, overridden: !!(ao || go),
+        layer: ao ? 'athlete' : go ? 'group' : 'team', layer_label: ao ? 'Changed for this athlete' : go ? `${tokenLabel(a.program_id, go.group_token)} change` : null,
         logged: logs.filter((l) => l.exercise_id === exId),
       };
     });
     const prescribedSets = exercises.reduce((s, x) => s + x.sets, 0);
     const loggedSets = exercises.reduce((s, x) => s + Math.min(x.logged.length, x.sets), 0);
-    return { week: d.week, day: d.day, label: d.label, exercises, complete: prescribedSets > 0 && loggedSets >= prescribedSets, logged_sets: loggedSets, prescribed_sets: prescribedSets };
+    return { week: d.week, day: d.day, label: gw?.activation ? 'Game-day activation' : d.label, exercises, complete: prescribedSets > 0 && loggedSets >= prescribedSets, logged_sets: loggedSets, prescribed_sets: prescribedSets, game_week: gw || undefined };
   }
-  function dueDate(a, d) { return addDays(a.start_date, (d.week - 1) * 7 + (d.day - 1)); }
+  function dueDate(a, d) { return a.mode === 'dateless' ? null : addDays(a.start_date, (d.week - 1) * 7 + (d.day - 1)); }
+  // C-8: the next session. Dateless: the first incomplete day in order. Dated: today's day, else the earliest incomplete day from today on.
+  function nextDayIndex(a, resolved) {
+    const sorted = resolved.map((r, i) => ({ r, i, d: a.days[i] })).sort((x, y) => x.d.week - y.d.week || x.d.day - y.d.day);
+    if (a.mode === 'dateless') return sorted.find((x) => !x.r.complete)?.i ?? -1;
+    const t = today();
+    return (sorted.find((x) => dueDate(a, x.d) === t) || sorted.find((x) => !x.r.complete && dueDate(a, x.d) >= t))?.i ?? -1;
+  }
+  ctx.wt = { maxInfo, maxFor, resolveDay, assignmentsFor, dueDate, nextDayIndex, profileOf, tokenMatches, tokenLabel, metaOf, saveMeta, validDays, progOf, playerIn, saveTest: (u, b) => saveTest(u, b), TESTS };
 
   router.get('/api/workouts/player/:id', ({ user, params }) => {
     const id = Number(params.id);
     need(selfOrStaff(user, id), 403, 'No access');
     return assignmentsFor(id, user.program_id).map((a) => ({
-      id: a.id, program_name: a.program_name, start_date: a.start_date, weeks: a.weeks,
-      days: a.days.map((d) => ({ ...resolveDay(id, a, d), due: dueDate(a, d) })),
+      id: a.id, program_name: a.program_name, start_date: a.start_date, weeks: a.weeks, mode: a.mode, kind: a.kind,
+      days: (() => { const prof = profileOf(id); const r = a.days.map((d) => ({ ...resolveDay(id, a, d, { profile: prof }), due: dueDate(a, d) })); const n = nextDayIndex(a, r); if (n >= 0) r[n].next = true; return r; })(),
     }));
   });
   router.get('/api/workouts/player/:id/:assignment/:week/:day', ({ user, params }) => {
@@ -199,18 +283,26 @@ export default function weights(ctx) {
     need(a, 404, 'Workout not found');
     const d = a.days.find((x) => x.week === Number(params.week) && x.day === Number(params.day));
     need(d, 404, 'Workout day not found');
-    return { assignment_id: a.id, program_name: a.program_name, due: dueDate(a, d), ...resolveDay(id, a, d) };
+    const prof = profileOf(id);
+    return { assignment_id: a.id, program_name: a.program_name, mode: a.mode, due: dueDate(a, d), availability: prof?.availability, avail_note: prof?.avail_note, ...resolveDay(id, a, d, { profile: prof }) };
   });
 
   // WGT-5: player logging (idempotent by client_id)
   function saveLog(user, b) {
     const pid = Number(b.player_id || user.id);
-    need(pid === user.id || can(user, 'weights.edit'), 403, 'You can only log your own work');
+    need(pid === user.id || (can(user, 'weights.edit') && playerIn(user, pid)), 403, 'You can only log your own work');
     if (b.client_id) { const dup = db.get('SELECT id FROM wt_logs WHERE client_id=?', b.client_id); if (dup) return { id: dup.id, duplicate: true }; }
     need(b.exercise_id && Number(b.set_no) > 0, 400, 'Exercise and set are required');
     const existing = db.get('SELECT id FROM wt_logs WHERE player_id=? AND assignment_id IS ? AND week IS ? AND day IS ? AND exercise_id=? AND set_no=?', pid, b.assignment_id || null, b.week || null, b.day || null, Number(b.exercise_id), Number(b.set_no));
-    if (existing) { db.run('UPDATE wt_logs SET reps=?, weight=?, at=? WHERE id=?', Number(b.reps) || 0, Number(b.weight) || 0, nowLocal(), existing.id); return { id: existing.id, updated: true }; }
-    return { id: db.insert('wt_logs', { player_id: pid, assignment_id: b.assignment_id || null, week: b.week || null, day: b.day || null, exercise_id: Number(b.exercise_id), set_no: Number(b.set_no), reps: Number(b.reps) || 0, weight: Number(b.weight) || 0, date: b.date || today(), client_id: b.client_id || null }) };
+    if (b.assignment_id) need(db.get('SELECT 1 FROM wt_assignments WHERE id=? AND program_id=?', Number(b.assignment_id), user.program_id), 404, 'Workout not found');
+    const row = { reps: Number(b.reps) || 0, weight: Number(b.weight) || 0, date: b.date || today(), exercise_id: Number(b.exercise_id) };
+    let out;
+    if (existing) { db.run('UPDATE wt_logs SET reps=?, weight=?, at=? WHERE id=?', row.reps, row.weight, nowLocal(), existing.id); out = { id: existing.id, updated: true }; }
+    else out = { id: db.insert('wt_logs', { player_id: pid, assignment_id: b.assignment_id || null, week: b.week || null, day: b.day || null, exercise_id: row.exercise_id, set_no: Number(b.set_no), reps: row.reps, weight: row.weight, date: row.date, client_id: b.client_id || null }) };
+    // C-15: update the training max from this set's estimated 1RM
+    const tm = ctx.strength?.afterLog(user, pid, { ...row, log_id: out.id });
+    if (tm) out.training_max = tm;
+    return out;
   }
   router.post('/api/wt-logs', ({ user, body }) => saveLog(user, body));
   router.post('/api/wt-logs/batch', ({ user, body }) => ({ results: (body.items || []).map((i) => { try { return saveLog(user, i); } catch (e) { return { error: e.message }; } }) }));
@@ -236,13 +328,19 @@ export default function weights(ctx) {
   });
   function saveTest(user, b) {
     need(TESTS[b.test_key], 400, 'Unknown test');
+    const t = TESTS[b.test_key];
+    // F-6 rep test: weight x reps becomes an estimated 1RM (Epley)
+    const repTest = t.rep_test && Number(b.weight) > 0 && Number(b.reps) > 0;
+    if (repTest) { need(Number(b.reps) <= 12, 400, 'Rep tests are estimated up to 12 reps'); b = { ...b, value: epley(b.weight, b.reps) }; }
     need(playerIn(user, Number(b.player_id)) && Number(b.value) > 0, 400, 'Player and value are required');
     const pid = Number(b.player_id);
-    const t = TESTS[b.test_key];
     const prev = db.get(`SELECT ${t.better === 'lower' ? 'min' : 'max'}(value) v FROM tests WHERE player_id=? AND test_key=?`, pid, b.test_key).v;
-    const id = db.insert('tests', { player_id: pid, test_key: b.test_key, value: Number(b.value), date: b.date || today(), by_user: user.id, season_id: core.currentSeason(user.program_id)?.id });
+    const date = b.date || today();
+    const id = db.insert('tests', { player_id: pid, test_key: b.test_key, value: Number(b.value), date, by_user: user.id, season_id: core.currentSeason(user.program_id)?.id });
+    if (repTest) db.insert('test_details', { test_id: id, weight: Number(b.weight), reps: Number(b.reps), method: 'epley' });
     const pr = prev == null || (t.better === 'lower' ? Number(b.value) < prev : Number(b.value) > prev);
-    return { id, pr };
+    ctx.strength?.afterTest(user, pid, b.test_key, Number(b.value), date, { pr, prev, test_id: id });
+    return repTest ? { id, pr, value: Number(b.value), estimated: true } : { id, pr };
   }
   router.post('/api/tests', ({ user, body }) => { editor(user); const r = saveTest(user, body); audit(user, 'record_test', 'player', Number(body.player_id), { test: body.test_key }); return r; });
   router.post('/api/tests/batch', ({ user, body }) => {
@@ -271,30 +369,49 @@ export default function weights(ctx) {
     return { ok: true };
   });
 
-  // Leaderboard — only when the coach turns it on; never body weight.
+  // C-16 leaderboards by team and position group. Players only see them when the coach turns them on, and never
+  // for a team or group the coach has hidden. Only TESTS can be ranked, so body weight never appears.
   router.get('/api/leaderboard', ({ user, query }) => {
-    need(core.settings(user.program_id).leaderboard || isStaff(user), 403, 'Leaderboards are turned off');
+    const s = core.settings(user.program_id);
+    const staff = isStaff(user);
+    need(s.leaderboard || staff, 403, 'Leaderboards are turned off');
     const key = query.test_key || 'squat';
     const t = TESTS[key]; need(t, 400, 'Unknown test');
-    const rows = db.all(`SELECT u.id, u.name, pp.jersey, pp.positions, ${t.better === 'lower' ? 'min' : 'max'}(t.value) best FROM tests t JOIN users u ON u.id=t.player_id JOIN player_profiles pp ON pp.user_id=u.id
-      WHERE u.program_id=? AND t.test_key=? AND pp.archived=0 GROUP BY u.id ORDER BY best ${t.better === 'lower' ? 'ASC' : 'DESC'} LIMIT 25`, user.program_id, key);
-    return { test: { key, ...t }, rows: jAll(rows, 'positions') };
+    const hidden = Array.isArray(s.leaderboard_hidden) ? s.leaderboard_hidden : [];
+    const teamId = query.team_id ? Number(query.team_id) : null; const grp = query.group || null; const levelId = query.level_id ? Number(query.level_id) : null;
+    if (!staff) {
+      need(!(teamId && hidden.includes(`team:${teamId}`)) && !(grp && hidden.includes(`group:${grp}`)), 403, 'The coach has hidden this leaderboard');
+    }
+    let rows = jAll(db.all(`SELECT u.id, u.name, pp.jersey, pp.positions, pp.team_id, pp.primary_group, t2.level_id, ${t.better === 'lower' ? 'min' : 'max'}(t.value) best FROM tests t JOIN users u ON u.id=t.player_id JOIN player_profiles pp ON pp.user_id=u.id LEFT JOIN teams t2 ON t2.id=pp.team_id
+      WHERE u.program_id=? AND t.test_key=? AND pp.archived=0 AND u.active=1 GROUP BY u.id ORDER BY best ${t.better === 'lower' ? 'ASC' : 'DESC'}`, user.program_id, key), 'positions');
+    for (const r of rows) r.group = r.primary_group || groupOf(r.positions);
+    if (teamId) rows = rows.filter((r) => r.team_id === teamId);
+    if (levelId) rows = rows.filter((r) => r.level_id === levelId);
+    if (grp) rows = rows.filter((r) => r.group === grp);
+    if (!staff) rows = rows.filter((r) => !hidden.includes(`team:${r.team_id}`) && !hidden.includes(`group:${r.group}`));
+    rows = rows.slice(0, Number(query.limit) > 0 ? Math.min(100, Number(query.limit)) : 25)
+      .map(({ id, name, jersey, positions, team_id, group, best }) => ({ id, name, jersey, positions, team_id, group, best }));
+    return { test: { key, ...t }, rows, visible_to_players: !!s.leaderboard, hidden };
   });
 
   // ---------- coach dashboard (WGT-7) ----------
   router.get('/api/wt-dashboard', ({ user, query }) => {
     need(isStaff(user), 403, 'Staff only');
-    const assignments = jAll(db.all('SELECT a.*, p.name program_name, p.days FROM wt_assignments a JOIN wt_programs p ON p.id=a.wt_program_id WHERE a.program_id=? ORDER BY a.start_date DESC', user.program_id), 'audience', 'days');
+    const assignments = jAll(db.all(`SELECT a.*, p.name program_name, p.days, coalesce(m.mode,'dated') mode, coalesce(m.kind,'lift') kind FROM wt_assignments a JOIN wt_programs p ON p.id=a.wt_program_id
+      LEFT JOIN wt_program_meta m ON m.wt_program_id=p.id WHERE a.program_id=? ORDER BY a.start_date DESC, a.id DESC`, user.program_id), 'audience', 'days');
     const a = query.assignment_id ? assignments.find((x) => x.id === Number(query.assignment_id)) : assignments[0];
     if (!a) return { assignments: [], rows: [] };
-    let players = core.resolvePlayers(user.program_id, a.audience).map((id) => j(db.get('SELECT u.id, u.name, pp.jersey, pp.units, pp.positions FROM users u JOIN player_profiles pp ON pp.user_id=u.id WHERE u.id=?', id), 'units', 'positions'));
+    let players = core.resolvePlayers(user.program_id, a.audience).map((id) => j(db.get('SELECT u.id, u.name, pp.jersey, pp.units, pp.positions, pp.availability, pp.avail_note, pp.team_id FROM users u JOIN player_profiles pp ON pp.user_id=u.id WHERE u.id=?', id), 'units', 'positions'));
     if (query.unit) players = players.filter((p) => p.units.includes(query.unit));
     if (query.position) players = players.filter((p) => p.positions.includes(query.position));
-    const dueDays = a.days.filter((d) => dueDate(a, d) <= today());
+    if (query.team_id) players = players.filter((p) => p.team_id === Number(query.team_id));
+    const dateless = a.mode === 'dateless';
+    const dueDays = dateless ? a.days : a.days.filter((d) => dueDate(a, d) <= today());
     const rows = players.map((p) => {
-      const done = dueDays.filter((d) => resolveDay(p.id, a, d).complete).length;
+      const prof = profileOf(p.id);
+      const done = dueDays.filter((d) => resolveDay(p.id, a, d, { profile: prof }).complete).length;
       const lastLog = db.get('SELECT max(date) d FROM wt_logs WHERE player_id=?', p.id).d;
-      return { ...p, due: dueDays.length, completed: done, behind: Math.max(0, dueDays.length - done), last_log: lastLog };
+      return { ...p, due: dueDays.length, completed: done, behind: dateless ? 0 : Math.max(0, dueDays.length - done), last_log: lastLog, streak: ctx.strength?.streak(p.id) ?? null };
     }).sort((x, y) => y.behind - x.behind || x.name.localeCompare(y.name));
     // Progress over time: group average of best maxes per month for main lifts.
     const ids = players.map((p) => p.id);
@@ -304,7 +421,7 @@ export default function weights(ctx) {
         progress[key] = db.all(`SELECT substr(date,1,7) month, round(avg(value)) avg FROM tests WHERE test_key=? AND player_id IN (${ids.map(() => '?').join(',')}) GROUP BY month ORDER BY month`, key, ...ids);
       }
     }
-    return { assignments: assignments.map((x) => ({ id: x.id, program_name: x.program_name, start_date: x.start_date, audience_labels: core.describeAudience(user.program_id, x.audience) })), assignment_id: a.id, due_days: dueDays.length, rows, progress };
+    return { assignments: assignments.map((x) => ({ id: x.id, program_name: x.program_name, start_date: x.start_date, mode: x.mode, audience_labels: core.describeAudience(user.program_id, x.audience) })), assignment_id: a.id, mode: a.mode, due_days: dueDays.length, rows, progress };
   });
   router.get('/api/wt-dashboard/export.csv', ({ user }) => {
     need(isStaff(user), 403, 'Staff only');
@@ -313,17 +430,21 @@ export default function weights(ctx) {
     return csvResponse('workout-logs.csv', csv(rows, [{ label: 'Player', key: 'name' }, { label: 'Date', key: 'date' }, { label: 'Exercise', key: 'exercise' }, { label: 'Set', key: 'set_no' }, { label: 'Reps', key: 'reps' }, { label: 'Weight', key: 'weight' }]));
   });
 
-  // ---------- body weight (WGT-9) — private by default ----------
-  const canSeeBody = (u, pid) => core.linkedPlayers(u).includes(pid) || ((isAdmin(u) || can(u, 'body.view')) && playerIn(u, pid));
+  // ---------- body weight (WGT-9, F-8) — coaches with body-data access only, unless the head coach opens it to families ----------
+  const familySees = (u) => !!core.settings(u.program_id).family_sees_bodyweight;
+  const staffSeesBody = (u, pid) => (isAdmin(u) || can(u, 'body.view')) && playerIn(u, pid);
+  const canSeeBody = (u, pid) => staffSeesBody(u, pid) || (familySees(u) && core.linkedPlayers(u).includes(pid));
   router.get('/api/bodyweight/:playerId', ({ user, params }) => {
     const pid = Number(params.playerId);
-    need(canSeeBody(user, pid), 403, 'Body weight is private to the player, their parents and staff who have been granted access');
+    need(canSeeBody(user, pid), 403, 'Body weight is private to coaches who have been granted access');
     if (isStaff(user)) audit(user, 'view', 'bodyweight', pid);
-    return db.all(`SELECT m.id, m.value, m.date, u.name by_name FROM measurements m LEFT JOIN users u ON u.id=m.by_user WHERE m.player_id=? AND m.kind='bodyweight' ORDER BY m.date`, pid);
+    // Coaches also see weigh-ins from testing days and the roster (kind 'weight'); families see their own log only.
+    const kinds = isStaff(user) ? "('bodyweight','weight')" : "('bodyweight')";
+    return db.all(`SELECT m.id, m.value, m.date, m.kind, u.name by_name FROM measurements m LEFT JOIN users u ON u.id=m.by_user WHERE m.player_id=? AND m.kind IN ${kinds} ORDER BY m.date, m.id`, pid);
   });
   router.post('/api/bodyweight', ({ user, body }) => {
     const pid = Number(body.player_id || user.id);
-    need(pid === user.id || (isStaff(user) && (can(user, 'weights.edit')) && canSeeBody(user, pid)) || (user.role === 'coach' && canSeeBody(user, pid)), 403, 'You cannot record body weight for this player');
+    need((pid === user.id && user.role === 'player') || (isStaff(user) && staffSeesBody(user, pid)), 403, 'You cannot record body weight for this player');
     need(Number(body.value) > 50 && Number(body.value) < 500, 400, 'Enter a weight in pounds');
     const id = db.insert('measurements', { player_id: pid, kind: 'bodyweight', value: Number(body.value), date: body.date || today(), by_user: user.id, season_id: core.currentSeason(user.program_id)?.id });
     audit(user, 'record', 'bodyweight', pid);

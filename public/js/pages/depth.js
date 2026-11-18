@@ -105,7 +105,7 @@ async function chart(el, ctx, id) {
       <div class="seg"><button data-view="board">${icon('list', 14)} Board</button><button data-view="field">${icon('field', 14)} Field</button></div>
       <select id="ver" style="width:auto" aria-label="Week">${options(history.map((h) => [h.id, h.week_label]), id)}</select>
       ${edit ? html`<button id="more">Options</button>` : ''}
-      <button id="print">${icon('printer', 14)} Print</button>
+      <button id="print">${icon('printer', 14)} Print</button><button id="fbpdf" title="Opens the print dialog; choose Save as PDF">${icon('download', 14)} Export PDF</button>
       ${edit ? html`<button class="primary" id="save" disabled>Saved</button>` : ''}
     </div></div>
   ${ctx.me.caps.staff ? tabs(['offense', 'defense', 'special'].map((u) => [u, UNIT[u], latestByUnit[u] ? `/depth/${latestByUnit[u].id}` : `/depth?new=${u}&team=${c.team_id}`]), c.unit) : ''}
@@ -120,6 +120,8 @@ async function chart(el, ctx, id) {
   on(el, 'click', '[data-node]', (e, g) => { hl = g.dataset.node; view = 'board'; draw(); setTimeout(() => $(`[data-row="${hl}"]`, el)?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 30); });
   $('#ver', el).onchange = (e) => ctx.navigate(`/depth/${e.target.value}`);
   $('#print', el).onclick = () => window.print();
+  // F-2: PDF export uses the same print view; the document title becomes the PDF file name.
+  $('#fbpdf', el).onclick = () => { const t = document.title; document.title = `Depth chart - ${(ctx.me.program?.name || '').trim()} - ${$('h1', el)?.textContent || ''}`.trim(); window.print(); setTimeout(() => { document.title = t; }, 500); };
   if (!edit) return;
   $('#pq', el).oninput = (e) => { poolQ = e.target.value.trim().toLowerCase(); draw(); };
   $('#pp', el).onchange = (e) => { poolPos = e.target.value; draw(); };

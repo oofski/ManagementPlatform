@@ -10,7 +10,8 @@ export default async function messages(el, ctx) {
   if (r === '/messages/moderation') return moderation(el, ctx);
   return chats(el, ctx, ctx.params.id ? Number(ctx.params.id) : null);
 }
-const mtabs = (ctx, a) => tabs([['chats', 'Chats', '/messages'], ['ann', 'Announcements', '/messages/announcements'], ...(ctx.me.caps.admin || ctx.me.caps['chats.read_all'] || ctx.me.user.role === 'parent' ? [['mod', ctx.me.user.role === 'parent' ? 'Contact requests' : 'Moderation', '/messages/moderation']] : [])], a);
+export const mtabs = (ctx, a) => tabs([['chats', 'Chats', '/messages'], ['ann', 'Announcements', '/messages/announcements'], ['docs', 'Documents', '/messages/documents'],
+  ...(ctx.me.caps.staff && ctx.me.caps['messages.send'] ? [['digest', 'Parent digest', '/messages/digest']] : []), ...(ctx.me.caps.admin || ctx.me.caps['chats.read_all'] || ctx.me.user.role === 'parent' ? [['mod', ctx.me.user.role === 'parent' ? 'Contact requests' : 'Moderation', '/messages/moderation']] : [])], a);
 
 async function chats(el, ctx, chatId) {
   const all = ctx.query.all === '1';

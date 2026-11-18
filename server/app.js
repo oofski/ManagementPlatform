@@ -18,6 +18,8 @@ import equipmentModule from './modules/equipment.js';
 import assignmentsModule from './modules/assignments.js';
 import seasonModule from './modules/season.js';
 import googleModule from './modules/google.js';
+import footballModule from './modules/football.js';
+import strengthModule from './modules/strength.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(__dirname, '..', 'public');
@@ -34,6 +36,8 @@ export function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname,
   const ctx = { db, core, router, dev, ticks: [] };
   for (const m of [authModule, rosterModule, calendarModule, practiceModule, playbookModule, attendanceModule,
     weightsModule, commsModule, equipmentModule, assignmentsModule, seasonModule, googleModule]) m(ctx);
+  footballModule(ctx); // v2 football operations (join codes, kiosk, safety, eligibility, forms, documents, digest)
+  strengthModule(ctx); // v2 weight room (group layers, templates, station, TV, feed, wellness, reports, testing battery)
 
   // Modules register periodic jobs (reminders, assignment nudges). Run every minute.
   const tick = () => { for (const fn of ctx.ticks) { try { fn(); } catch (e) { console.error('tick', e); } } };

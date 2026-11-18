@@ -10,31 +10,64 @@ import { HttpError, need, nowLocal, addDays, addMinutes, today, fmtLocal, parseL
 import { j, jAll } from '../db.js';
 import * as G from '../google/client.js';
 import { parseEmail, htmlToText, guessType, findOpponent } from '../google/parser.js';
+import { createCredentials } from '../google/credentials.js';
+import { cleverConfig, cleverCheck } from '../google/clever.js';
+import ssoRoutes from '../google/sso.js';
+import { createHandoff, handoffForState, finishHandoff, resultPage } from '../google/handoff.js';
 import { EVENT_TYPES } from './calendar.js';
 import { TESTS } from './weights.js';
 
 const SCAN_EVERY_MS = 10 * 60_000;
 const STATE_TTL_MS = 15 * 60_000;
 const IMPORTED_LABEL = 'Imported';
+const CONNECT_ERRORS = {
+  state: 'The connect link expired or was already used.',
+  access_denied: 'Google access was not granted.',
+  exchange: 'Google did not accept the sign-in.',
+  no_refresh_token: 'Google did not return offline access. Disconnect, then connect again.',
+  not_configured: 'Google is not set up yet.',
+  staff_only: 'Only staff can connect Google.',
+};
 
 export default function google(ctx) {
-  const { router, db, core } = ctx;
+  const { db, core } = ctx;
   const { isStaff, isAdmin, audit, notify } = core;
   const vault = G.createVault(db);
+  const creds = createCredentials(db, vault);
   const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
   const dt = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+
+  // Every route remembers the address the app is reached on, so background jobs (which have no request)
+  // can still build links when APP_URL is not set.
+  let lastOrigin = '';
+  const wrap = (m) => (p, h, o) => ctx.router[m](p, (c) => { const o2 = G.originFrom(c.req); if (o2) lastOrigin = o2; return h(c); }, o);
+  const router = { get: wrap('get'), post: wrap('post'), put: wrap('put'), del: wrap('del'), match: (...a) => ctx.router.match(...a) };
+  // The Google client for a program: the credentials saved in the app, else GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
+  const cfgOf = (programId, req) => G.config({ creds: creds.get(programId, 'google'), origin: (req && G.originFrom(req)) || lastOrigin });
+  ssoRoutes({ ...ctx, router }, { creds });
 
   // ---------- helpers ----------
   const staffOnly = (u) => need(isStaff(u), 403, 'Only staff can use Google integrations');
   const accountOf = (u) => j(db.get('SELECT * FROM google_accounts WHERE user_id=? AND program_id=?', u.id, u.program_id), 'scopes');
-  function connected(u, feature) {
-    const cfg = G.requireConfigured();
+  const prefsOf = (uid) => j(db.get('SELECT * FROM google_prefs WHERE user_id=?', uid) || { user_id: uid, disabled: '[]', wanted: '[]', name: null, picture: null }, 'disabled', 'wanted');
+  function savePrefs(uid, upd) {
+    const cur = prefsOf(uid);
+    const next = { ...cur, ...upd };
+    db.run(`INSERT INTO google_prefs (user_id, disabled, wanted, name, picture) VALUES (?,?,?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET disabled=excluded.disabled, wanted=excluded.wanted, name=excluded.name, picture=excluded.picture`,
+    uid, JSON.stringify(next.disabled || []), JSON.stringify(next.wanted || []), next.name || null, next.picture || null);
+  }
+  const granted = (acct) => G.featuresFromScopes(acct.scopes);
+  const enabledFeatures = (acct) => { const off = prefsOf(acct.user_id).disabled; return granted(acct).filter((f) => !off.includes(f)); };
+  function connected(u, feature, req) {
+    const cfg = G.requireConfigured(cfgOf(u.program_id, req));
     staffOnly(u);
     const acct = accountOf(u);
     need(acct, 400, 'Connect your Google account first (Integrations › Connection).');
     if (feature) {
       const f = G.FEATURES[feature];
-      need(f.scopes.every((s) => acct.scopes.includes(s)), 403, `Your Google connection does not include ${f.label}. Reconnect with ${f.label} ticked.`);
+      need(f.scopes.every((s) => acct.scopes.includes(s)), 403, `Your Google connection does not include ${f.label}. Turn on ${f.label} under Integrations › Connection.`);
+      need(!prefsOf(u.id).disabled.includes(feature), 403, `${f.label} is turned off for your Google connection. Turn it on under Integrations › Connection.`);
     }
     return { cfg, acct, gapi: gapiFor(cfg, acct) };
   }
@@ -68,23 +101,27 @@ export default function google(ctx) {
   const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const userRow = (id) => { const u = db.get('SELECT * FROM users WHERE id=?', id); if (u) u.perms = JSON.parse(u.perms || '{}'); return u; };
   function publicAccount(a) {
+    const p = prefsOf(a.user_id);
+    const has = granted(a);
     return {
-      email: a.email, scopes: a.scopes, features: G.featuresFromScopes(a.scopes), connected_at: a.connected_at,
+      email: a.email, name: p.name, picture: p.picture, scopes: a.scopes, features: enabledFeatures(a), granted: has, disabled: p.disabled.filter((f) => has.includes(f)),
+      // Asked for but not granted (for example unticked on Google's consent screen): offer to reconnect.
+      missing: p.wanted.filter((f) => G.FEATURES[f] && !has.includes(f)), connected_at: a.connected_at,
       gmail_label: a.gmail_label, gmail_query: a.gmail_query, apply_imported_label: !!a.apply_imported_label, auto_scan: !!a.auto_scan,
       allow_program_send: !!a.allow_program_send, last_scan_at: a.last_scan_at, last_error: a.last_error,
     };
   }
 
   // ---------- status, connect, callback, disconnect ----------
-  router.get('/api/google/status', ({ user }) => {
+  router.get('/api/google/status', ({ user, req }) => {
     staffOnly(user);
-    const cfg = G.config();
+    const cfg = cfgOf(user.program_id, req);
     const acct = accountOf(user);
     const s = core.settings(user.program_id);
     const senderRow = s.gmail_send_user_id ? db.get(`SELECT u.id, u.name, g.email, g.scopes, g.allow_program_send FROM users u LEFT JOIN google_accounts g ON g.user_id=u.id
       WHERE u.id=? AND u.program_id=?`, s.gmail_send_user_id, user.program_id) : null;
     const out = {
-      configured: cfg.configured, missing: cfg.missing, message: cfg.configured ? null : G.notConfiguredMessage(cfg),
+      configured: cfg.configured, missing: cfg.missing, source: cfg.source, message: cfg.configured ? null : G.notConfiguredMessage(cfg),
       redirect_uri: cfg.redirectUri, token_key_set: cfg.tokenKeyFromEnv,
       features: Object.entries(G.FEATURES).map(([key, f]) => ({ key, label: f.label, help: f.help })),
       connection: acct ? publicAccount(acct) : null, is_admin: isAdmin(user),
@@ -100,20 +137,35 @@ export default function google(ctx) {
     return out;
   });
 
-  router.post('/api/google/connect', ({ user, body, sid }) => {
-    const cfg = G.requireConfigured();
+  router.post('/api/google/connect', ({ user, body, sid, req }) => {
+    const cfg = G.requireConfigured(cfgOf(user.program_id, req));
     staffOnly(user);
     need(sid, 401, 'Sign in again before connecting Google');
+    need(cfg.redirectUri, 503, 'The app address is unknown. Set APP_URL in the server environment.');
     const feats = [...new Set((body.features || []).filter((f) => G.FEATURES[f]))];
     need(feats.length, 400, 'Pick at least one feature to connect');
     const state = token(24);
     db.run('DELETE FROM google_oauth_states WHERE created_at<? OR user_id=?', Date.now() - STATE_TTL_MS, user.id);
     db.insert('google_oauth_states', { state, user_id: user.id, session_hash: sha(sid), features: feats, created_at: Date.now() });
+    // Turning a service on means using it again, even if it was switched off before.
+    const p = prefsOf(user.id);
+    savePrefs(user.id, { wanted: feats, disabled: p.disabled.filter((f) => !feats.includes(f)) });
     const scopes = [...new Set([...G.BASE_SCOPES, ...feats.flatMap((f) => G.FEATURES[f].scopes)])];
-    return { url: G.authorizeUrl(cfg, { state, scopes, loginHint: accountOf(user)?.email || user.email }) };
+    const url = G.authorizeUrl(cfg, { state, scopes, loginHint: accountOf(user)?.email || user.email });
+    // The Windows app opens Google in the system browser (Google blocks embedded sign-in) and polls the hand-off.
+    if (body.desktop) return { url, ...createHandoff(db, { kind: 'connect', provider: 'google', state, userId: user.id }) };
+    return { url };
   });
 
-  const back = (q) => {
+  // Where the callback ends: back to the Integrations page, or (desktop flow) a result page in the system browser.
+  const backTo = (q, desktopFlow) => {
+    if (desktopFlow) {
+      const ok = /google=connected/.test(q);
+      const err = /google_error=([^&]+)/.exec(q)?.[1];
+      finishHandoff(db, desktopFlow, ok ? {} : { error: CONNECT_ERRORS[err] || `Google sign-in failed (${err}).` });
+      return ok ? resultPage({ title: 'Google is connected', message: 'You can return to Program Manager.', code: desktopFlow.code })
+        : resultPage({ title: 'Google was not connected', message: `${CONNECT_ERRORS[err] || `Google sign-in failed (${err}).`} Go back to Program Manager to try again.`, ok: false });
+    }
     const to = `/settings/integrations?tab=connection&${q}`;
     return {
       __raw: true, type: 'text/html; charset=utf-8', headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' },
@@ -121,14 +173,23 @@ export default function google(ctx) {
     };
   };
   // OAuth redirect target. The browser arrives with the app's session cookie (SameSite=Lax allows top-level GETs).
-  router.get('/api/google/callback', async ({ user, query, sid }) => {
-    const cfg = G.config();
-    if (!cfg.configured) return back('google_error=not_configured');
-    if (!user || !user._session.verified) return back('google_error=signed_out');
+  // A flow started from the Windows app finishes in the system browser without that cookie: its state is tied to a
+  // desktop hand-off instead, and the app learns the result by polling it.
+  router.get('/api/google/callback', async (c) => {
+    const h = handoffForState(db, c.query.state);
+    return connectCallback(c, h && h.kind === 'connect' && h.status === 'pending' ? h : null);
+  }, { auth: false });
+  async function connectCallback({ user: sessionUser, query, sid, req }, h) {
+    const back = (q) => backTo(q, h);
     const st = query.state ? db.get('SELECT * FROM google_oauth_states WHERE state=?', String(query.state)) : null;
+    const user = h ? (st ? userRow(st.user_id) : null) : sessionUser;
+    const cfg = user ? cfgOf(user.program_id, req) : G.config({ origin: G.originFrom(req) });
+    if (!cfg.configured) return back('google_error=not_configured');
+    if (!h && (!user || !user._session.verified)) return back('google_error=signed_out');
     if (st) db.run('DELETE FROM google_oauth_states WHERE state=?', st.state); // single use
-    if (!st || st.user_id !== user.id || st.session_hash !== sha(sid) || st.created_at < Date.now() - STATE_TTL_MS) {
-      audit(user, 'google_connect_rejected', 'google', user.id, { reason: 'state_mismatch' });
+    const okState = st && user && user.active && st.user_id === user.id && st.created_at >= Date.now() - STATE_TTL_MS && (h ? h.user_id === user.id : st.session_hash === sha(sid));
+    if (!okState) {
+      if (user) audit(user, 'google_connect_rejected', 'google', user.id, { reason: 'state_mismatch' });
       return back('google_error=state');
     }
     if (query.error) return back(`google_error=${encodeURIComponent(String(query.error).slice(0, 40))}`);
@@ -140,13 +201,17 @@ export default function google(ctx) {
       return back('google_error=exchange');
     }
     const scopes = String(tok.scope || '').split(/\s+/).filter(Boolean);
-    let email = G.emailFromIdToken(tok.id_token);
+    const claims = G.claimsFromIdToken(tok.id_token) || {};
+    let email = claims.email || null;
+    let name = claims.name || null; let picture = claims.picture || null;
     if (!email) {
       try {
         const info = await G.gfetch(cfg, async () => tok.access_token, 'userinfo', '/v1/userinfo');
-        email = info?.email || null;
+        email = info?.email || null; name = name || info?.name || null; picture = picture || info?.picture || null;
       } catch { /* email is informational */ }
     }
+    // Only an https Google profile photo is kept (it is shown as an <img>).
+    savePrefs(user.id, { name: name ? String(name).slice(0, 120) : null, picture: picture && /^https:\/\/[a-z0-9.-]+\.(googleusercontent|google)\.com\//i.test(picture) ? String(picture).slice(0, 500) : null });
     const existing = accountOf(user);
     const refreshEnc = tok.refresh_token ? vault.encrypt(tok.refresh_token) : existing?.refresh_token_enc;
     if (!refreshEnc) return back('google_error=no_refresh_token');
@@ -159,28 +224,45 @@ export default function google(ctx) {
       if (existing.email !== email) row.imported_label_id = null;
       db.update('google_accounts', existing.id, row);
     } else db.insert('google_accounts', { ...row, program_id: user.program_id, user_id: user.id, connected_at: nowLocal() });
-    audit(user, 'google_connect', 'google', user.id, { email, features: G.featuresFromScopes(scopes) });
+    audit(user, 'google_connect', 'google', user.id, { email, features: G.featuresFromScopes(scopes), desktop: !!h });
     return back('google=connected');
-  }, { auth: false });
+  }
 
-  router.post('/api/google/disconnect', async ({ user }) => {
+  // Per-service switch. Turning a service off stops the app using it without asking Google again;
+  // turning on a service that was never granted needs a new consent (the client then calls /connect).
+  router.put('/api/google/features', ({ user, body }) => {
+    staffOnly(user);
+    const acct = accountOf(user);
+    need(acct, 400, 'Connect your Google account first');
+    need(G.FEATURES[body.feature], 400, 'Unknown Google service');
+    const p = prefsOf(user.id);
+    if (body.enabled) {
+      if (!granted(acct).includes(body.feature)) return { ok: false, needs_consent: true };
+      savePrefs(user.id, { disabled: p.disabled.filter((f) => f !== body.feature) });
+    } else savePrefs(user.id, { disabled: [...new Set([...p.disabled, body.feature])] });
+    audit(user, 'google_feature', 'google', user.id, { feature: body.feature, enabled: !!body.enabled });
+    return { ok: true, connection: publicAccount(accountOf(user)) };
+  });
+
+  router.post('/api/google/disconnect', async ({ user, req }) => {
     staffOnly(user);
     const acct = accountOf(user);
     need(acct, 404, 'No Google account is connected');
-    const cfg = G.config();
+    const cfg = cfgOf(user.program_id, req);
     let revoked = false;
     if (cfg.configured) {
       let rt = null; try { rt = vault.decrypt(acct.refresh_token_enc); } catch { /* key changed */ }
       if (rt) revoked = await G.revoke(cfg, rt);
     }
     db.run('DELETE FROM google_accounts WHERE id=?', acct.id);
+    db.run('DELETE FROM google_prefs WHERE user_id=?', user.id);
     audit(user, 'google_disconnect', 'google', user.id, { email: acct.email, revoked });
     return { ok: true, revoked, message: cfg.configured ? null : G.notConfiguredMessage(cfg) };
   });
 
   // ---------- Gmail settings, labels and messages ----------
-  router.put('/api/google/gmail/settings', ({ user, body }) => {
-    G.requireConfigured();
+  router.put('/api/google/gmail/settings', ({ user, body, req }) => {
+    G.requireConfigured(cfgOf(user.program_id, req));
     staffOnly(user);
     const acct = accountOf(user);
     need(acct, 400, 'Connect your Google account first');
@@ -281,7 +363,7 @@ export default function google(ctx) {
     return Number(r.changes);
   }
   async function scanAccount(acct, { query } = {}) {
-    const cfg = G.requireConfigured();
+    const cfg = G.requireConfigured(cfgOf(acct.program_id));
     const gapi = gapiFor(cfg, acct);
     const u = userRow(acct.user_id);
     const found = await searchMessages(gapi, acct, { query, max: 25 });
@@ -314,12 +396,12 @@ export default function google(ctx) {
 
   let scanning = false;
   async function scanAll() {
-    if (scanning || !G.config().configured) return { skipped: true };
+    if (scanning) return { skipped: true };
     scanning = true;
     let total = 0;
     try {
       const rows = jAll(db.all(`SELECT g.* FROM google_accounts g JOIN users u ON u.id=g.user_id WHERE g.auto_scan=1 AND u.active=1`), 'scopes')
-        .filter((a) => a.scopes.includes(G.SCOPE.gmailRead));
+        .filter((a) => a.scopes.includes(G.SCOPE.gmailRead) && !prefsOf(a.user_id).disabled.includes('gmail') && cfgOf(a.program_id).configured);
       for (const acct of rows) {
         try {
           const r = await scanAccount(acct);
@@ -391,9 +473,9 @@ export default function google(ctx) {
     audit(user, 'google_import_event', 'event', r.id, { source: d.source, draft_id: d.id });
     let labeled = null; let labelError = null;
     const acct = accountOf(user);
-    if (d.source === 'gmail' && acct && acct.apply_imported_label && acct.scopes.includes(G.SCOPE.gmailModify) && G.config().configured) {
+    if (d.source === 'gmail' && acct && acct.apply_imported_label && acct.scopes.includes(G.SCOPE.gmailModify) && !prefsOf(user.id).disabled.includes('gmail') && cfgOf(user.program_id).configured) {
       try {
-        const gapi = gapiFor(G.config(), acct);
+        const gapi = gapiFor(cfgOf(user.program_id), acct);
         let lid = acct.imported_label_id;
         if (!lid) { lid = await labelIdByName(gapi, IMPORTED_LABEL, { create: true }); db.update('google_accounts', acct.id, { imported_label_id: lid }); }
         await gapi('gmail', `/gmail/v1/users/me/messages/${encodeURIComponent(d.source_id)}/modify`, { method: 'POST', body: { addLabelIds: [lid] } });
@@ -413,8 +495,8 @@ export default function google(ctx) {
     db.run('UPDATE programs SET settings=? WHERE id=?', JSON.stringify(next), programId);
     return next;
   }
-  router.put('/api/google/gmail/sender', ({ user, body }) => {
-    G.requireConfigured();
+  router.put('/api/google/gmail/sender', ({ user, body, req }) => {
+    G.requireConfigured(cfgOf(user.program_id, req));
     need(isAdmin(user), 403, 'Only the head coach can choose how program email is sent');
     const uid = body.user_id ? Number(body.user_id) : null;
     if (uid) {
@@ -430,8 +512,7 @@ export default function google(ctx) {
 
   const encWord = (s) => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s, 'utf8').toString('base64')}?=`);
   const oneLine = (s) => String(s || '').replace(/[\r\n]+/g, ' ').trim();
-  function mime({ fromName, fromEmail, to, subject, body }) {
-    const appUrl = G.config().appUrl;
+  function mime({ fromName, fromEmail, to, subject, body, appUrl }) {
     // Outbox bodies use app paths ("/invite/abc"); make them clickable links in real email.
     const text = appUrl ? String(body || '').replace(/(^|\s)(\/(?:invite|calendar|assignments|messages|players|practice|weights|equipment|development|settings|checkin)\b[^\s]*)/g, `$1${appUrl}$2`) : String(body || '');
     const lines = [
@@ -445,15 +526,15 @@ export default function google(ctx) {
   async function deliverOutbox({ limit = 25 } = {}) {
     const out = { sent: 0, failed: 0 };
     if (sending) return { ...out, skipped: true };
-    const cfg = G.config();
-    if (!cfg.configured) return out;
     sending = true;
     try {
       for (const p of db.all('SELECT id, name FROM programs')) {
         const s = core.settings(p.id);
         if (!s.gmail_send_user_id) continue;
         const acct = j(db.get(`SELECT g.*, u.role, u.is_admin FROM google_accounts g JOIN users u ON u.id=g.user_id WHERE g.user_id=? AND g.program_id=? AND u.active=1`, s.gmail_send_user_id, p.id), 'scopes');
-        if (!acct || !acct.scopes.includes(G.SCOPE.gmailSend)) continue;
+        if (!acct || !acct.scopes.includes(G.SCOPE.gmailSend) || prefsOf(acct.user_id).disabled.includes('gmail')) continue;
+        const cfg = cfgOf(p.id);
+        if (!cfg.configured) continue;
         if (!(acct.allow_program_send || acct.role === 'head_coach' || acct.is_admin)) continue;
         // Mail queued before sending was turned on stays simulated (it may be months old).
         const afterId = s.gmail_send_after_id ?? setSender(p.id, s.gmail_send_user_id).gmail_send_after_id;
@@ -463,7 +544,7 @@ export default function google(ctx) {
         const gapi = gapiFor(cfg, acct);
         for (const r of rows) {
           try {
-            const res = await gapi('gmail', '/gmail/v1/users/me/messages/send', { method: 'POST', body: { raw: mime({ fromName: p.name, fromEmail: acct.email, to: r.to_email, subject: r.subject, body: r.body }) } });
+            const res = await gapi('gmail', '/gmail/v1/users/me/messages/send', { method: 'POST', body: { raw: mime({ fromName: p.name, fromEmail: acct.email, to: r.to_email, subject: r.subject, body: r.body, appUrl: cfg.appUrl }) } });
             db.update('outbox', r.id, { sent_at: nowLocal() });
             db.run(`INSERT INTO google_outbox_log (outbox_id, attempts, gmail_id, at) VALUES (?,1,?,?) ON CONFLICT(outbox_id) DO UPDATE SET gmail_id=excluded.gmail_id, last_error=NULL, at=excluded.at`, r.id, res?.id || null, nowLocal());
             out.sent++;
@@ -607,6 +688,8 @@ export default function google(ctx) {
     const out = {};
     for (const [k, names] of Object.entries(ROSTER_ALIASES)) { const h = names.find((n) => r[n] !== undefined && r[n] !== ''); if (h) out[k] = r[h]; }
     if (!out.name && (r.first_name || r.last_name)) out.name = `${r.first_name || ''} ${r.last_name || ''}`.trim();
+    // C-1: grade and parent contact columns pass through to the shared import (server/modules/fb-roster.js).
+    for (const k of Object.keys(r)) if (/^(grade|primary_group|(parent|parent1|parent2|guardian)_(name|email|phone))$/.test(k) && r[k] !== '') out[k] = r[k];
     return out;
   }
   router.post('/api/google/sheets/roster-import', async ({ user, body }) => {
@@ -739,15 +822,93 @@ export default function google(ctx) {
     return out;
   });
 
+  // ---------- in-app setup (head coach): OAuth clients for Google and Clever, school sign-in options ----------
+  const adminOnly = (u) => need(isAdmin(u), 403, 'Only the head coach can set up integrations');
+  function setupView(user, req) {
+    const pid = user.program_id;
+    const origin = G.originFrom(req) || lastOrigin;
+    const cfg = cfgOf(pid, req);
+    const cc = cleverConfig({ creds: creds.get(pid, 'clever'), origin });
+    const gv = creds.publicView(pid, 'google');
+    const cv = creds.publicView(pid, 'clever');
+    return {
+      app_url: cfg.appUrl, app_url_from_env: cfg.appUrlFromEnv, token_key_set: cfg.tokenKeyFromEnv,
+      redirect_uris: { connect: cfg.redirectUri, signin: cfg.signinRedirectUri, clever: cc.redirectUri },
+      google: {
+        client_id: gv.client_id, secret_set: gv.secret_set, updated_at: gv.updated_at, configured: cfg.configured, source: cfg.source,
+        env_available: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET), sso: !!gv.options.sso, hd: gv.options.hd || '',
+      },
+      clever: {
+        client_id: cv.client_id, secret_set: cv.secret_set, updated_at: cv.updated_at, configured: cc.configured, source: cc.source,
+        env_available: !!(process.env.CLEVER_CLIENT_ID && process.env.CLEVER_CLIENT_SECRET), sso: !!cv.options.sso,
+      },
+      connected_staff: db.get('SELECT count(*) n FROM google_accounts WHERE program_id=?', pid).n,
+    };
+  }
+  router.get('/api/google/setup', ({ user, req }) => { adminOnly(user); return setupView(user, req); });
+  const PROVIDER_LABEL = { google: 'Google', clever: 'Clever' };
+  router.put('/api/google/setup/:provider', ({ user, params, body, req }) => {
+    adminOnly(user);
+    const provider = params.provider;
+    need(PROVIDER_LABEL[provider], 404, 'Unknown integration');
+    const upd = {};
+    if (body.client_id !== undefined) {
+      const v = String(body.client_id || '').trim();
+      need(!v || (/^[\w.\-]+$/.test(v) && v.length <= 200), 400, 'The Client ID looks wrong. Copy it again from the provider (no spaces).');
+      upd.client_id = v;
+    }
+    if (body.client_secret) {
+      const v = String(body.client_secret).trim();
+      need(/^\S+$/.test(v) && v.length <= 300, 400, 'The Client secret looks wrong. Copy it again (no spaces).');
+      upd.client_secret = v;
+    }
+    if (body.clear_secret) upd.clear_secret = true;
+    const options = {};
+    if (body.sso !== undefined) options.sso = !!body.sso;
+    if (provider === 'google' && body.hd !== undefined) {
+      const hd = String(body.hd || '').trim().toLowerCase().replace(/^@/, '');
+      need(!hd || /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(hd), 400, 'Enter a domain such as ridgeviewschools.org, or leave it empty');
+      options.hd = hd;
+    }
+    upd.options = options;
+    creds.save(user.program_id, provider, upd, user.id, nowLocal());
+    const v = setupView(user, req);
+    if (options.sso && !v[provider].configured) {
+      creds.save(user.program_id, provider, { options: { sso: false } }, user.id, nowLocal());
+      need(false, 400, `Add the ${PROVIDER_LABEL[provider]} Client ID and Client secret before turning on sign-in`);
+    }
+    // Never log the secret itself.
+    audit(user, 'integration_setup', 'program', user.program_id, { provider, client_id: body.client_id !== undefined, secret: !!body.client_secret || !!body.clear_secret, ...options });
+    return v;
+  });
+  router.del('/api/google/setup/:provider', ({ user, params, req }) => {
+    adminOnly(user);
+    need(PROVIDER_LABEL[params.provider], 404, 'Unknown integration');
+    creds.remove(user.program_id, params.provider);
+    audit(user, 'integration_setup_removed', 'program', user.program_id, { provider: params.provider });
+    return setupView(user, req);
+  });
+  router.post('/api/google/setup/:provider/check', async ({ user, params, req }) => {
+    adminOnly(user);
+    if (params.provider === 'google') {
+      const cfg = cfgOf(user.program_id, req);
+      need(cfg.configured, 400, 'Add the Client ID and Client secret first');
+      return G.checkClient(cfg);
+    }
+    need(params.provider === 'clever', 404, 'Unknown integration');
+    const cc = cleverConfig({ creds: creds.get(user.program_id, 'clever'), origin: G.originFrom(req) });
+    need(cc.configured, 400, 'Add the Client ID and Client secret first');
+    return cleverCheck(cc);
+  });
+
   // ---------- background jobs (ticks run every minute; Gmail scans every 10 minutes) ----------
   let lastScan = Date.now();
   ctx.ticks.push(() => {
-    if (!G.config().configured) return;
     deliverOutbox().catch((e) => console.error('[google] outbox delivery failed:', e.message));
     if (Date.now() - lastScan >= SCAN_EVERY_MS) {
       lastScan = Date.now();
       scanAll().catch((e) => console.error('[google] Gmail scan failed:', e.message));
     }
   });
-  ctx.google = { scanAll, scanAccount, deliverOutbox, vault };
+  ctx.google = { scanAll, scanAccount, deliverOutbox, vault, creds };
 }
