@@ -13,6 +13,8 @@ export const groupOf = (positions = []) => {
   for (const p of positions) for (const [g, codes] of Object.entries(POS_GROUPS)) if (codes.includes(p)) return g;
   return null;
 };
+// primary_group (roster module) holds a position code chosen by the coach; fall back to the listed positions.
+export const athleteGroup = (primary, positions = []) => (primary && (POS_GROUPS[primary] ? primary : groupOf([primary]))) || groupOf(positions);
 export const groupTokens = (g) => (POS_GROUPS[g] || []).filter((c) => !['LS', 'RET'].includes(c) || g === c).map((c) => `pos:${c}`);
 
 const yt = (name) => `https://www.youtube.com/results?search_query=${encodeURIComponent(`${name} exercise demo`)}`;

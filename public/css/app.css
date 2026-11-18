@@ -592,7 +592,12 @@ tr.wr-flag td { background: color-mix(in srgb, var(--bad-soft) 55%, var(--panel)
 .wr-tap button:first-child { border-radius: var(--r) 0 0 var(--r); border-right: 0; }
 .wr-tap button:last-child { border-radius: 0 var(--r) var(--r) 0; border-left: 0; }
 .wr-ok { height: 48px; width: 48px; padding: 0; }
-@media (max-width: 420px) { .wr-tap button { width: 32px; } }
+.wr-shead { display: grid; grid-template-columns: 22px minmax(0, 1.35fr) minmax(0, 1fr) 48px; gap: 6px; font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.wr-srow { grid-template-columns: 22px minmax(0, 1.35fr) minmax(0, 1fr) 48px; }
+.wr-tap button { width: 36px; }
+.wr-tap input, .wr-step input { -moz-appearance: textfield; appearance: textfield; }
+.wr-tap input::-webkit-outer-spin-button, .wr-tap input::-webkit-inner-spin-button, .wr-step input::-webkit-outer-spin-button, .wr-step input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+@media (max-width: 420px) { .wr-tap button { width: 30px; } }
 .wr-tv { padding: 0; }
 .wr-tv-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding: 24px 32px 12px; }
 .wr-tv-head h1 { font-size: clamp(32px, 5vw, 64px); letter-spacing: -0.02em; margin: 4px 0; line-height: 1.05; }

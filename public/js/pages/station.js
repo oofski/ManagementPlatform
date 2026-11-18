@@ -14,7 +14,7 @@ export default async function station(el, ctx) {
   const shell = (inner) => set(el, html`<div class="wr-full wr-station"><div class="wr-bar"><b>Station mode</b><span class="spacer"></span><span id="sq" class="badge warn" hidden></span><span id="sn" class="badge" hidden>Offline</span>${inner.bar || ''}<a class="btn" href="/weights">${icon('x', 14)} Exit</a></div><div class="wr-body">${inner.body}</div></div>`);
   const syncBadges = () => { const q = $('#sq', el); if (!q) return; const n = queueLength(); q.hidden = !n; q.textContent = `${n} waiting to sync`; $('#sn', el).hidden = navigator.onLine; };
   const offQ = onQueueChange(syncBadges);
-  const onl = async () => { syncBadges(); if (navigator.onLine) { const r = await flushQueue(); if (r.sent) toast(`Synced ${r.sent} set${r.sent > 1 ? 's' : ''}`); syncBadges(); } };
+  const onl = async () => { syncBadges(); if (navigator.onLine) { const r = await flushQueue(); if (r.sent) toast(`Synced ${r.sent} set${r.sent > 1 ? 's' : ''}`); if (!queueLength()) $$('.wr-srow.queued', el).forEach((x) => x.classList.toggle('queued', false)); syncBadges(); } };
   window.addEventListener('online', onl); window.addEventListener('offline', syncBadges);
   new MutationObserver((_, obs) => { if (!document.body.contains(el)) { offQ(); window.removeEventListener('online', onl); window.removeEventListener('offline', syncBadges); obs.disconnect(); } }).observe(document.body, { childList: true, subtree: true });
 
@@ -57,6 +57,7 @@ export default async function station(el, ctx) {
         <header><div><b>${p.name}</b> <span class="faint">${p.jersey != null ? `#${p.jersey}` : ''}</span></div><div class="s">${p.workout.label ? `${p.workout.label} · ` : ''}W${p.workout.week}D${p.workout.day}${p.availability && p.availability !== 'available' ? html` ${availBadge(p.availability)}` : ''}</div>
           ${p.avail_note && p.availability !== 'available' ? html`<div class="s wr-warn">${p.avail_note}</div>` : ''}</header>
         ${p.workout.exercises.map((x) => html`<div class="wr-ex" data-ex="${x.exercise_id}" data-w="${p.workout.week}" data-d="${p.workout.day}"><div class="wr-ex-h"><b>${x.name}</b><span class="s muted">${x.sets} × ${x.reps || ''}${x.pct ? ` @ ${x.pct}%` : ''}${x.rpe ? ` · RPE ${x.rpe}` : ''}${x.layer !== 'team' ? ' · changed' : ''}</span></div>
+          <div class="wr-shead"><span></span><span>Weight (lb)</span><span>Reps</span><span></span></div>
           ${Array.from({ length: x.sets }, (_, i) => { const l = x.logged.find((y) => y.set_no === i + 1); const k = `${p.id}:${x.exercise_id}:${p.workout.week}:${p.workout.day}:${i + 1}`; const done = !!l || locallyLogged.has(k); return html`<div class="wr-srow ${done ? 'done' : ''}" data-set="${i + 1}" data-key="${k}">
             <span class="wr-sn">${i + 1}</span>
             <span class="wr-tap"><button type="button" data-st="weight:-5" aria-label="Less weight">−</button><input type="number" inputmode="decimal" data-k="weight" value="${l?.weight ?? x.load ?? ''}" aria-label="Weight"><button type="button" data-st="weight:5" aria-label="More weight">+</button></span>

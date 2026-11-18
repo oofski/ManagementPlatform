@@ -6,7 +6,7 @@ import { need, nowLocal, today, addDays, parseLocal } from '../core.js';
 import { j, jAll } from '../db.js';
 import { csv, csvResponse } from '../app.js';
 import { TESTS, MEASURES, epley } from './weights.js';
-import { ensureLibrary, ensureTemplates, exerciseIdByName, POS_GROUPS, groupOf, groupTokens, CLUBS, REFERENCE_NORMS, ACTIVATION, TEMPLATES } from '../strength-data.js';
+import { ensureLibrary, ensureTemplates, exerciseIdByName, POS_GROUPS, groupOf, athleteGroup, groupTokens, CLUBS, REFERENCE_NORMS, ACTIVATION, TEMPLATES } from '../strength-data.js';
 
 const SETTING_KEYS = ['leaderboard', 'leaderboard_hidden', 'family_sees_bodyweight', 'weekly_report_enabled', 'weekly_report_weekday', 'weekly_report_hour',
   'weekly_report_athlete', 'weekly_report_parent', 'weekly_report_ad'];
@@ -50,7 +50,7 @@ export default function strength(ctx) {
   function programPlayers(programId, { teamId, group, levelId } = {}) {
     let rows = jAll(db.all(`SELECT u.id, u.name, u.email, p.*, t.level_id, t.name team_name FROM users u JOIN player_profiles p ON p.user_id=u.id LEFT JOIN teams t ON t.id=p.team_id
       WHERE u.program_id=? AND u.role='player' AND u.active=1 AND p.archived=0 ORDER BY u.name`, programId), 'units', 'positions');
-    for (const r of rows) { r.id = r.user_id; r.group = r.primary_group || groupOf(r.positions); r.grade = gradeOf(r.class_year); r.team = teamName(r.team_id); }
+    for (const r of rows) { r.id = r.user_id; r.group = athleteGroup(r.primary_group, r.positions); r.grade = gradeOf(r.class_year); r.team = teamName(r.team_id); }
     if (teamId) rows = rows.filter((r) => r.team_id === Number(teamId));
     if (levelId) rows = rows.filter((r) => r.level_id === Number(levelId));
     if (group) rows = rows.filter((r) => r.group === group);
@@ -161,7 +161,7 @@ export default function strength(ctx) {
       tests: TESTS, measures: MEASURES, groups: Object.keys(POS_GROUPS), phases: PHASES, clubs: CLUBS.map((c) => ({ key: c.key, labels: c.thresholds.map((t) => c.label(t)) })),
       can_edit: can(user, 'weights.edit'), is_admin: isAdmin(user), body_view: isAdmin(user) || can(user, 'body.view'),
       settings: Object.fromEntries(SETTING_KEYS.map((k) => [k, s[k]])),
-      my_team_id: me?.team_id ?? null, my_group: me ? me.primary_group || groupOf(JSON.parse(me.positions || '[]')) : null,
+      my_team_id: me?.team_id ?? null, my_group: me ? athleteGroup(me.primary_group, JSON.parse(me.positions || '[]')) : null,
       teams: db.all('SELECT t.id, t.name, l.name lname, l.id level_id FROM teams t JOIN levels l ON l.id=t.level_id WHERE l.program_id=? ORDER BY l.sort, t.name', user.program_id).map((t) => ({ id: t.id, level_id: t.level_id, name: t.name === t.lname ? t.name : `${t.lname} ${t.name}` })),
     };
   });

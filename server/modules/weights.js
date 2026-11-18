@@ -4,7 +4,7 @@
 import { fail, need, nowLocal, addDays, parseLocal, fmtLocal, today } from '../core.js';
 import { j, jAll } from '../db.js';
 import { csv, csvResponse } from '../app.js';
-import { ensureLibrary, groupOf } from '../strength-data.js';
+import { ensureLibrary, groupOf, athleteGroup } from '../strength-data.js';
 
 // F-6 football testing battery. Strength tests accept a rep test (weight x reps -> estimated 1RM by Epley).
 // Height and weight are part of the battery but are stored as measurements (coach-only) and never ranked.
@@ -218,7 +218,7 @@ export default function weights(ctx) {
     if (k === 'level') return prof.level_id === Number(v);
     if (k === 'unit') return (prof.units || []).includes(v);
     if (k === 'pos') return (prof.positions || []).includes(v);
-    if (k === 'pg') return (prof.primary_group || groupOf(prof.positions)) === v;
+    if (k === 'pg') return athleteGroup(prof.primary_group, prof.positions) === v;
     if (k === 'group') return !!db.get('SELECT 1 FROM group_members WHERE group_id=? AND user_id=?', Number(v), prof.user_id);
     return false;
   }
@@ -384,7 +384,7 @@ export default function weights(ctx) {
     }
     let rows = jAll(db.all(`SELECT u.id, u.name, pp.jersey, pp.positions, pp.team_id, pp.primary_group, t2.level_id, ${t.better === 'lower' ? 'min' : 'max'}(t.value) best FROM tests t JOIN users u ON u.id=t.player_id JOIN player_profiles pp ON pp.user_id=u.id LEFT JOIN teams t2 ON t2.id=pp.team_id
       WHERE u.program_id=? AND t.test_key=? AND pp.archived=0 AND u.active=1 GROUP BY u.id ORDER BY best ${t.better === 'lower' ? 'ASC' : 'DESC'}`, user.program_id, key), 'positions');
-    for (const r of rows) r.group = r.primary_group || groupOf(r.positions);
+    for (const r of rows) r.group = athleteGroup(r.primary_group, r.positions);
     if (teamId) rows = rows.filter((r) => r.team_id === teamId);
     if (levelId) rows = rows.filter((r) => r.level_id === levelId);
     if (grp) rows = rows.filter((r) => r.group === grp);
