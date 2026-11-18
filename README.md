@@ -88,7 +88,7 @@ These rules should be confirmed with counsel and the state association before la
 - **Download:** get `ProgramManager-Setup-x.y.z.exe` from the repository's [Releases](https://github.com/oofski/ManagementPlatform/releases) page.
 - **First run:** choose to connect to your program's server (for example your Render link), so that coaches, players and parents share one program, or to run everything on this computer.
 - **Updates:** the app checks Releases at launch and every 6 hours. It downloads new versions in the background and asks to restart. You can also check from Help › Check for updates.
-- **Publishing an update:** bump `version` in `desktop/package.json`, commit, then run the **Desktop release** workflow from the Actions tab (or push a `v1.0.1` style tag). GitHub builds the installer on Windows and publishes the release.
+- **Publishing an update:** bump `version` in `desktop/package.json` (for example to 1.0.1), commit and push. The **Desktop release** workflow builds the installer on Windows and publishes the release, and installed apps pick it up automatically.
 - **Local development:** run `cd desktop`, then `npm install`, then `npm start`.
 
 The installer is not code-signed yet, so Windows SmartScreen shows "Windows protected your PC" the first time. Click **More info** and then **Run anyway**. A code-signing certificate removes this warning.

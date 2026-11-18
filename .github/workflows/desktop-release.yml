@@ -1,13 +1,15 @@
 # Builds the Windows installer on a real Windows machine and publishes it as a GitHub Release.
 # The installed app checks these releases and updates itself.
-# Release a new version: bump "version" in desktop/package.json, commit, then either push a tag
-# (git tag v1.0.1 && git push origin v1.0.1) or run this workflow from the Actions tab.
+# Release a new version: bump "version" in desktop/package.json and push. Pushing a v* tag or
+# running this workflow from the Actions tab also works.
 name: Desktop release
 
 on:
   workflow_dispatch:
   push:
     tags: ['v*']
+    branches: ['claude/fervent-pascal-jkunps', 'main']
+    paths: ['desktop/package.json', '.github/workflows/desktop-release.yml']
 
 permissions:
   contents: write
