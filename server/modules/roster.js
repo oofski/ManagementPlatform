@@ -324,10 +324,11 @@ export default function roster({ router, db, core }) {
   });
 
   // ---------- depth charts ----------
+  // Slot layout on the depth-chart field: [slot, x%, top%]. Three readable rows per unit.
   const SLOTS = {
-    offense: [['LT', 30, 62], ['LG', 40, 62], ['C', 50, 62], ['RG', 60, 62], ['RT', 70, 62], ['TE', 81, 62], ['WR-X', 8, 60], ['WR-Z', 92, 66], ['WR-S', 20, 70], ['QB', 50, 76], ['RB', 50, 90]],
-    defense: [['DE-L', 30, 40], ['DT-L', 43, 40], ['DT-R', 57, 40], ['DE-R', 70, 40], ['WLB', 32, 28], ['MLB', 50, 26], ['SLB', 68, 28], ['CB-L', 8, 30], ['CB-R', 92, 30], ['FS', 40, 10], ['SS', 62, 12]],
-    special: [['K', 50, 80], ['P', 50, 92], ['LS', 50, 62], ['H', 44, 78], ['KR', 40, 12], ['PR', 60, 12], ['GUN-L', 8, 60], ['GUN-R', 92, 60]],
+    offense: [['WR-X', 8, 3], ['WR-S', 24, 3], ['TE', 76, 3], ['WR-Z', 92, 3], ['LT', 22, 35], ['LG', 36, 35], ['C', 50, 35], ['RG', 64, 35], ['RT', 78, 35], ['QB', 42, 67], ['RB', 58, 67]],
+    defense: [['CB-L', 8, 3], ['FS', 38, 3], ['SS', 62, 3], ['CB-R', 92, 3], ['WLB', 30, 35], ['MLB', 50, 35], ['SLB', 70, 35], ['DE-L', 22, 67], ['DT-L', 40, 67], ['DT-R', 60, 67], ['DE-R', 78, 67]],
+    special: [['KR', 38, 3], ['PR', 62, 3], ['GUN-L', 10, 35], ['LS', 50, 35], ['GUN-R', 90, 35], ['K', 30, 67], ['H', 50, 67], ['P', 70, 67]],
   };
   router.get('/api/depth/layouts', () => SLOTS);
   const chartVisible = (u, c) => isStaff(u) || (c.visible_to_players && core.linkedPlayers(u).some((pid) => db.get('SELECT 1 FROM player_profiles WHERE user_id=? AND team_id=?', pid, c.team_id)));

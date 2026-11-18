@@ -265,20 +265,20 @@ test('event list: one calendar filtered per user, with audience filter for admin
   assert.ok(games.body.length && games.body.every((e) => e.type === 'game'));
 });
 
-test('reminders are sent once per offset via ctx.sendReminders', async () => {
+test('only the nearest due reminder is sent, once, via ctx.sendReminders', async () => {
   const startAt = addMinutes(nowLocal(), 60);
   const e = await head.post('/api/events', { type: 'practice', title: 'Reminder practice', start: startAt, audience: [`player:${player.id}`], reminders: [1440, 120] });
   assert.equal(e.status, 200);
   const sent = t.app.ctx.sendReminders();
-  assert.ok(sent >= 2);
+  assert.ok(sent >= 1);
   const mine = t.notifications(player.id, 'Reminder: Reminder practice');
-  assert.equal(mine.length, 2);
+  assert.equal(mine.length, 1, 'the missed 24h reminder is skipped when the 2h one is due');
   assert.ok(mine.every((n) => n.kind === 'reminder'));
-  assert.ok(t.notifications(parent.id, 'Reminder: Reminder practice').length === 2, 'parents are reminded too');
-  // only the 24h reminder is emailed
-  assert.equal(t.db.get(`SELECT count(*) n FROM outbox WHERE user_id=? AND subject='Reminder: Reminder practice'`, player.id).n, 1);
+  assert.ok(t.notifications(parent.id, 'Reminder: Reminder practice').length === 1, 'parents are reminded too');
+  // short-notice reminders are push only; only day-before reminders are emailed
+  assert.equal(t.db.get(`SELECT count(*) n FROM outbox WHERE user_id=? AND subject='Reminder: Reminder practice'`, player.id).n, 0);
   t.app.ctx.sendReminders();
-  assert.equal(t.notifications(player.id, 'Reminder: Reminder practice').length, 2, 'not repeated');
+  assert.equal(t.notifications(player.id, 'Reminder: Reminder practice').length, 1, 'not repeated');
   // admins can trigger the job; others cannot
   assert.equal((await player.post('/api/calendar/run-reminders')).status, 403);
   assert.equal((await head.post('/api/calendar/run-reminders')).status, 200);

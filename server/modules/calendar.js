@@ -325,9 +325,10 @@ export default function calendar(ctx) {
     const rows = jAll(db.all(`SELECT * FROM events WHERE start>? AND start<=? AND status!='cancelled'`, now, horizon), 'audience', 'reminders');
     let sent = 0;
     for (const e of rows) {
-      for (const off of e.reminders || []) {
-        if (addMinutes(e.start, -off) > now) continue;
-        if (db.get('SELECT 1 FROM reminder_log WHERE event_id=? AND offset_min=?', e.id, off)) continue;
+      // Only the nearest due reminder is sent; earlier ones that were missed are marked done.
+      const due = (e.reminders || []).filter((off) => addMinutes(e.start, -off) <= now && !db.get('SELECT 1 FROM reminder_log WHERE event_id=? AND offset_min=?', e.id, off)).sort((a, b) => a - b);
+      for (const off of due.slice(1)) db.run('INSERT INTO reminder_log VALUES (?,?)', e.id, off);
+      for (const off of due.slice(0, 1)) {
         db.run('INSERT INTO reminder_log VALUES (?,?)', e.id, off);
         const label = off >= 1440 ? `${Math.round(off / 1440)} day` : off >= 60 ? `${Math.round(off / 60)} hours` : `${off} minutes`;
         notify(e.program_id, recipients(e), { kind: 'reminder', title: `Reminder: ${e.title}`, body: `Starts ${e.start.replace('T', ' ')} (in about ${label})${e.location ? ' at ' + e.location : ''}`, link: `/calendar/${e.id}`, from: 'system', email: off >= 1440 });
