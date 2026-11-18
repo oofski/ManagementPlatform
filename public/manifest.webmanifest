@@ -1,0 +1,10 @@
+{
+  "name": "Program Manager",
+  "short_name": "Program",
+  "description": "Calendar, practice, playbook, roster, attendance, weight room, messages, equipment and assignments for a football program.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f5f7",
+  "theme_color": "#17212b",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

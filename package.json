@@ -1,0 +1,14 @@
+{
+  "name": "gridiron-program-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One app to run a high school football program: calendar, practice, playbook, roster, attendance, weight room, communication, equipment, assignments and season tracking.",
+  "type": "module",
+  "scripts": {
+    "start": "node --no-warnings server/index.js",
+    "seed": "node --no-warnings server/seed.js",
+    "test": "node --no-warnings --test --test-concurrency=1 'test/*.test.js'",
+    "test:ui": "node --no-warnings test/ui/smoke.mjs"
+  },
+  "engines": { "node": ">=22.13" }
+}
