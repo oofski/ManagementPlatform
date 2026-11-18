@@ -1,7 +1,7 @@
 {
   "name": "program-manager-desktop",
   "productName": "Program Manager",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Program Manager for Windows: run your football program from the desktop.",
   "author": "Program Manager",
   "main": "main.js",
@@ -40,7 +40,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Program Manager"
+      "shortcutName": "Program Manager",
+      "differentialPackage": true
     },
     "publish": [{ "provider": "github", "owner": "oofski", "repo": "ManagementPlatform", "releaseType": "release" }]
   }

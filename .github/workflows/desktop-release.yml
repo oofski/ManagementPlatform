@@ -37,10 +37,19 @@ jobs:
         run: |
           v=$(node -p "require('./desktop/package.json').version")
           if ! gh release view "v$v" >/dev/null 2>&1; then
-            gh release create "v$v" --target "$GITHUB_SHA" --title "Program Manager $v" \
-              --notes "Download ProgramManager-Setup-$v.exe below and run it. Installed copies update automatically."
+            notes="docs/release-notes/v$v.md"
+            if [ -f "$notes" ]; then
+              gh release create "v$v" --target "$GITHUB_SHA" --title "Program Manager $v" --notes-file "$notes"
+            else
+              gh release create "v$v" --target "$GITHUB_SHA" --title "Program Manager $v" \
+                --notes "Download ProgramManager-Setup.exe below and run it. Installed copies download updates in the background and install them when the app restarts."
+            fi
           fi
-          gh release upload "v$v" "desktop/dist/ProgramManager-Setup-$v.exe" "desktop/dist/ProgramManager-Setup-$v.exe.blockmap" desktop/dist/latest.yml --clobber
+          # electron-updater needs the versioned installer, its .blockmap (differential downloads) and latest.yml.
+          # The version-less copy gives the web app a permanent link:
+          # https://github.com/oofski/ManagementPlatform/releases/latest/download/ProgramManager-Setup.exe
+          cp "desktop/dist/ProgramManager-Setup-$v.exe" desktop/dist/ProgramManager-Setup.exe
+          gh release upload "v$v" "desktop/dist/ProgramManager-Setup-$v.exe" "desktop/dist/ProgramManager-Setup-$v.exe.blockmap" desktop/dist/latest.yml desktop/dist/ProgramManager-Setup.exe --clobber
       - name: Keep a copy of the installer with this run
         uses: actions/upload-artifact@v4
         with:
