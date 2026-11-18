@@ -146,7 +146,9 @@ test('game-week template builds the week leading up to the game', async () => {
   assert.deepEqual(JSON.parse(meeting.audience), ['coaches']);
   assert.equal((await head.post('/api/events/game-week', { game_date: gd })).status, 400);
   const qb = await t.as('QB coach');
-  assert.equal((await qb.post('/api/events/game-week', { game_date: gd, opponent: 'X' })).status, 403);
+  // A scoped coach must pick an audience (400), and only their own groups (403).
+  assert.equal((await qb.post('/api/events/game-week', { game_date: gd, opponent: 'X' })).status, 400);
+  assert.equal((await qb.post('/api/events/game-week', { game_date: gd, opponent: 'X', audience: [`team:${V}`] })).status, 403);
 });
 
 test('status change sends urgent notifications and tracks acknowledgments', async () => {
@@ -290,4 +292,57 @@ test('email me the event details', async () => {
   const mail = t.db.get(`SELECT * FROM outbox WHERE user_id=? AND subject='Event: Email game'`, player.id);
   assert.match(mail.body, /Where: Away field/);
   assert.match(mail.body, /opponent: Mailers/);
+});
+
+test('coaches-only meetings: non-admin coaches can create them, trainers and other staff do not see them', async () => {
+  const qb = await t.as('QB coach');
+  const r = await qb.post('/api/events', { type: 'meeting', title: 'QB staff sync', start: future(3, '07:00') });
+  assert.equal(r.status, 200);
+  const staffMtg = await qb.post('/api/events', { type: 'meeting', title: 'All staff', start: future(3, '08:00'), audience: ['staff'] });
+  assert.equal(staffMtg.status, 200);
+  const trainer = await t.as('Athletic trainer');
+  const ad = await t.as('Athletic director');
+  for (const c of [trainer, ad]) {
+    assert.equal((await c.get(`/api/events/${r.body.id}`)).status, 404, 'coaches-only meeting hidden');
+    assert.equal((await c.get(`/api/events/${staffMtg.body.id}`)).status, 200, 'staff meeting visible');
+    assert.ok(!(await c.get('/api/events')).body.some((e) => e.id === r.body.id));
+  }
+  // trainers still see ordinary team events
+  const hv = await head.post('/api/events', { type: 'practice', title: 'Trainer-visible practice', start: future(3), audience: [`team:${V}`] });
+  assert.equal((await trainer.get(`/api/events/${hv.body.id}`)).status, 200);
+});
+
+test('custom group audiences count as "their own group" only when every member is covered', async () => {
+  const qb = await t.as('QB coach');
+  const qbs = t.players(`p.positions LIKE '%"QB"%'`).map((p) => p.id);
+  const other = t.players(`p.positions NOT LIKE '%"QB"%'`)[0].id;
+  const mine = await head.post('/api/groups', { name: 'QB room', members: qbs });
+  const mixed = await head.post('/api/groups', { name: 'Mixed', members: [...qbs, other] });
+  assert.equal(mine.status, 200);
+  assert.equal((await qb.post('/api/events', { type: 'film', title: 'G1', start: future(5), audience: [`group:${mine.body.id}`] })).status, 200);
+  assert.equal((await qb.post('/api/events', { type: 'film', title: 'G2', start: future(5), audience: [`group:${mixed.body.id}`] })).status, 403);
+});
+
+test('lift event edits keep the weight-room link (assignment, week, day)', async () => {
+  const e = t.db.insert('events', { program_id: head.user.program_id, type: 'lift', title: 'Lift W1D1', start: future(6, '06:30'), audience: ['program'], details: { wt_assignment_id: 99, week: 1, day: 2 } });
+  assert.equal((await head.put(`/api/events/${e}`, { details: { what_to_bring: 'Shoes' } })).status, 200);
+  assert.deepEqual(JSON.parse(t.db.get('SELECT details FROM events WHERE id=?', e).details), { what_to_bring: 'Shoes', wt_assignment_id: 99, week: 1, day: 2 });
+});
+
+test('staff RSVP for a player only when that player is in the event', async () => {
+  const jvOnly = await head.post('/api/events', { type: 'practice', title: 'JV only', start: future(7), audience: [`team:${t.teams['JV Red']}`] });
+  const varsityPlayer = t.varsity()[0].id;
+  const jvPlayer = t.players('p.team_id=?', t.teams['JV Red'])[0].id;
+  assert.equal((await head.post(`/api/events/${jvOnly.body.id}/rsvp`, { status: 'going', for_player: varsityPlayer })).status, 403);
+  assert.equal((await head.post(`/api/events/${jvOnly.body.id}/rsvp`, { status: 'going', for_player: jvPlayer })).status, 200);
+  assert.equal((await head.post(`/api/events/${jvOnly.body.id}/rsvp`, { status: 'going', for_player: head.id })).status, 200);
+});
+
+test('calendar feed tokens are random url-safe tokens', async () => {
+  const c = await t.as('JV assistant');
+  t.db.run('UPDATE users SET cal_token=NULL WHERE id=?', c.id);
+  const r = await c.get('/api/calendar/feed-url');
+  const tok = r.body.path.match(/^\/feed\/(.+)\.ics$/)[1];
+  assert.match(tok, /^[A-Za-z0-9_-]{20,}$/);
+  assert.equal((await t.anon.get(r.body.path)).status, 200);
 });

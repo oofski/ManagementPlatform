@@ -193,3 +193,24 @@ test('notifications: list, open and open-all', async () => {
   await pl.post('/api/notifications/open-all');
   assert.equal((await pl.get('/api/me')).body.unread, 0);
 });
+
+test('two-step verification: five wrong codes end the session', async () => {
+  const r = await t.anon.post('/api/auth/login', { email: 'coach@ridgeview.example', password: 'password123' });
+  assert.equal(r.body.twofa, true);
+  const c = t.client(r.body.token);
+  for (let i = 0; i < 4; i++) assert.equal((await c.post('/api/auth/verify', { code: 'wrong' })).status, 400);
+  const last = await c.post('/api/auth/verify', { code: 'wrong' });
+  assert.equal(last.status, 401);
+  assert.ok(!t.db.get('SELECT 1 FROM sessions WHERE id=?', r.body.token), 'session deleted');
+  // even the right code no longer works on that session
+  assert.equal((await c.post('/api/auth/verify', { code: codeFor(t.user('coach@ridgeview.example').id) })).status, 401);
+});
+
+test('an archived player session is rejected even if it still exists', async () => {
+  const p = t.players()[5];
+  const c = await t.as(p.id);
+  assert.equal((await c.get('/api/me')).status, 200);
+  t.db.run('UPDATE player_profiles SET archived=1 WHERE user_id=?', p.id); // e.g. archived without session clean-up
+  assert.equal((await c.get('/api/me')).status, 401);
+  t.db.run('UPDATE player_profiles SET archived=0 WHERE user_id=?', p.id);
+});

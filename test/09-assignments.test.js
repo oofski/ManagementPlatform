@@ -199,3 +199,24 @@ test('report forms: responses visible only to staff it is shared with', async ()
   assert.equal((await dc.put(`/api/forms/${shared.body.id}`, { title: 'x' })).status, 403);
   assert.equal((await parent.get('/api/forms')).body.length, 0);
 });
+
+test('a quiz with no questions is rejected and never marked completed', async () => {
+  const empty = (await head.post('/api/plays', { name: 'No questions play' })).body.id;
+  const a = await head.post('/api/assignments', { type: 'quiz', title: 'Empty quiz', play_ids: [empty], audience: [`player:${player.id}`] });
+  assert.equal(a.status, 200);
+  assert.equal((await player.post(`/api/assignments/${a.body.id}/quiz`, { answers: {} })).status, 400);
+  const st = t.db.get('SELECT status FROM assignment_status WHERE assignment_id=? AND player_id=?', a.body.id, player.id);
+  assert.notEqual(st.status, 'completed');
+  assert.equal(t.db.get('SELECT count(*) n FROM quiz_results WHERE play_id=?', empty).n, 0);
+});
+
+test('scoped coaches change only assignments they created or for their own groups', async () => {
+  const hv = await head.post('/api/assignments', { type: 'watch', title: 'Varsity film', video_url: 'https://example.com/v', audience: [`team:${V}`] });
+  assert.equal((await qbc.put(`/api/assignments/${hv.body.id}`, { title: 'Hijack' })).status, 403);
+  assert.equal((await qbc.del(`/api/assignments/${hv.body.id}`)).status, 403);
+  const qbOnly = await head.post('/api/assignments', { type: 'watch', title: 'QB film', video_url: 'https://example.com/q', audience: ['pos:QB'] });
+  assert.equal((await qbc.put(`/api/assignments/${qbOnly.body.id}`, { title: 'QB film (updated)' })).status, 200, 'their group');
+  const own = await qbc.post('/api/assignments', { type: 'watch', title: 'Own film', video_url: 'https://example.com/o', audience: [`team:${V}`] });
+  assert.equal((await qbc.del(`/api/assignments/${own.body.id}`)).status, 200, 'their own');
+  assert.equal((await head.del(`/api/assignments/${hv.body.id}`)).status, 200);
+});

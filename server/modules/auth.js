@@ -35,9 +35,23 @@ export default function auth({ router, db, core, dev }) {
     return { ok: true, twofa: two, token: sid };
   }, { auth: false });
 
+  // Wrong two-step codes per session; after MAX_CODE_TRIES the session is thrown away (no brute forcing 6 digits).
+  const MAX_CODE_TRIES = 5;
+  const codeFailures = new Map();
   router.post('/api/auth/verify', ({ user, body, sid }) => {
     const s = user._session;
-    need(s.code && String(body.code).trim() === s.code, 400, 'That code is not correct');
+    if (!(s.code && String(body.code).trim() === s.code)) {
+      const n = (codeFailures.get(sid) || 0) + 1;
+      if (n >= MAX_CODE_TRIES) {
+        codeFailures.delete(sid);
+        db.run('DELETE FROM sessions WHERE id=?', sid);
+        audit(user, 'twofa_lockout', 'user', user.id);
+        fail(401, 'Too many incorrect codes. Sign in again to get a new code.');
+      }
+      codeFailures.set(sid, n);
+      fail(400, 'That code is not correct');
+    }
+    codeFailures.delete(sid);
     db.run('UPDATE sessions SET verified=1, code=NULL WHERE id=?', sid);
     return { ok: true };
   }, { unverified: true });
@@ -209,7 +223,7 @@ export default function auth({ router, db, core, dev }) {
     need(can(user, 'roster.edit'), 403, 'Coaches only');
     need(body.name, 400, 'Name is required');
     const id = db.insert('custom_groups', { program_id: user.program_id, name: body.name });
-    for (const m of body.members || []) db.run('INSERT OR IGNORE INTO group_members VALUES (?,?)', id, m);
+    for (const m of body.members || []) if (db.get('SELECT 1 FROM users WHERE id=? AND program_id=? AND active=1', Number(m), user.program_id)) db.run('INSERT OR IGNORE INTO group_members VALUES (?,?)', id, Number(m));
     audit(user, 'create_group', 'group', id);
     return { id };
   });
@@ -220,7 +234,7 @@ export default function auth({ router, db, core, dev }) {
     if (body.name) db.run('UPDATE custom_groups SET name=? WHERE id=?', body.name, id);
     if (body.members) {
       db.run('DELETE FROM group_members WHERE group_id=?', id);
-      for (const m of body.members) db.run('INSERT OR IGNORE INTO group_members VALUES (?,?)', id, m);
+      for (const m of body.members) if (db.get('SELECT 1 FROM users WHERE id=? AND program_id=? AND active=1', Number(m), user.program_id)) db.run('INSERT OR IGNORE INTO group_members VALUES (?,?)', id, Number(m));
     }
     return { ok: true };
   });

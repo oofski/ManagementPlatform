@@ -11,6 +11,12 @@ export default function practice(ctx) {
 
   const planOf = (pid, id) => db.get('SELECT * FROM practice_plans WHERE id=? AND program_id=?', id, pid);
   const staffOnly = (u) => need(isStaff(u), 403, 'Staff only');
+  // Non-admin coaches with group scopes change only plans they wrote or whose practice is for their groups.
+  const canManagePlan = (u, plan) => {
+    if (isAdmin(u) || plan.created_by === u.id || !core.staffScopes(u.id).length) return true;
+    const ev = plan.event_id ? j(db.get('SELECT audience FROM events WHERE id=?', plan.event_id), 'audience') : null;
+    return !!ev && core.managesAudience(u, ev.audience);
+  };
 
   // ---------- drills ----------
   router.get('/api/drills', ({ user, query }) => {
@@ -65,7 +71,11 @@ export default function practice(ctx) {
     if (date) {
       const d = parseLocal(date + 'T00:00'); const mon = new Date(d); mon.setDate(d.getDate() - ((d.getDay() + 6) % 7));
       const from = fmtLocal(mon).slice(0, 10); const to = addDays(from, 6);
-      const evs = db.all(`SELECT e.id, e.start, e.end FROM events e WHERE e.program_id=? AND e.type='practice' AND e.status!='cancelled' AND e.start>=? AND e.start<=?`, plan.program_id, from, to + 'T23:59');
+      const all = jAll(db.all(`SELECT e.id, e.start, e.end, e.audience FROM events e WHERE e.program_id=? AND e.type='practice' AND e.status!='cancelled' AND e.start>=? AND e.start<=?`, plan.program_id, from, to + 'T23:59'), 'audience');
+      // Only count practices for the same players (a JV practice does not count toward varsity's weekly limit).
+      const mine = new Set(core.resolvePlayers(plan.program_id, event.audience));
+      const evs = all.filter((ev) => ev.id === event.id || ev.audience.some((t) => event.audience.includes(t))
+        || core.resolvePlayers(plan.program_id, ev.audience).some((id) => mine.has(id)));
       let minutes = 0; let contactMin = 0;
       for (const ev of evs) {
         const pl = db.get('SELECT id FROM practice_plans WHERE event_id=?', ev.id);
@@ -136,12 +146,21 @@ export default function practice(ctx) {
     need(can(user, 'practice.edit'), 403, 'Coaches only');
     const plan = planOf(user.program_id, Number(params.id));
     need(plan, 404, 'Plan not found');
+    need(canManagePlan(user, plan), 403, 'You can only edit plans you wrote or for your own groups');
+    if (body.periods) {
+      need(Array.isArray(body.periods), 400, 'Periods must be a list');
+      // Drills, plays and coaches referenced by a period must belong to this program.
+      for (const p of body.periods) {
+        if (p.drill_id) need(db.get('SELECT 1 FROM drills WHERE id=? AND program_id=?', Number(p.drill_id), user.program_id), 400, 'Unknown drill');
+        if (p.coach_id) need(db.get(`SELECT 1 FROM users WHERE id=? AND program_id=? AND role IN ('head_coach','coach','trainer','staff')`, Number(p.coach_id), user.program_id), 400, 'Unknown coach');
+        for (const id of p.play_ids || []) need(db.get('SELECT 1 FROM plays WHERE id=? AND program_id=?', Number(id), user.program_id), 400, 'Unknown play');
+      }
+    }
     const upd = { updated_at: nowLocal() };
     for (const k of ['name', 'notes', 'start_time']) if (body[k] !== undefined) upd[k] = body[k];
     if (body.is_template !== undefined) upd.is_template = body.is_template ? 1 : 0;
     db.update('practice_plans', plan.id, upd);
     if (body.periods) {
-      need(Array.isArray(body.periods), 400, 'Periods must be a list');
       db.tx(() => {
         const keep = new Set();
         body.periods.forEach((p, i) => {
@@ -161,7 +180,10 @@ export default function practice(ctx) {
   });
   router.del('/api/plans/:id', ({ user, params }) => {
     need(can(user, 'practice.edit'), 403, 'Coaches only');
-    db.run('DELETE FROM practice_plans WHERE id=? AND program_id=?', Number(params.id), user.program_id);
+    const plan = planOf(user.program_id, Number(params.id));
+    need(plan, 404, 'Plan not found');
+    need(canManagePlan(user, plan), 403, 'You can only delete plans you wrote or for your own groups');
+    db.run('DELETE FROM practice_plans WHERE id=? AND program_id=?', plan.id, user.program_id);
     return { ok: true };
   });
   router.post('/api/plans/:id/save-template', ({ user, params, body }) => {
@@ -263,10 +285,13 @@ export default function practice(ctx) {
     need(Number.isInteger(v) && v >= 1 && v <= scale, 400, `Rating must be 1 to ${scale}`);
     const pl = db.get(`SELECT id FROM users WHERE id=? AND program_id=? AND role='player'`, Number(b.player_id), user.program_id);
     need(pl, 404, 'Player not found');
+    need(isAdmin(user) || !core.staffScopes(user.id).length || core.managesAudience(user, [`player:${pl.id}`]), 403, 'You can only rate players in your own groups');
     let period = null; let date = b.date || today(); let planId = b.plan_id || null; let drill = b.drill_id || null;
     if (b.period_id) {
       period = db.get('SELECT p.*, pp.event_id FROM periods p JOIN practice_plans pp ON pp.id=p.plan_id WHERE p.id=? AND pp.program_id=?', Number(b.period_id), user.program_id);
       need(period, 404, 'Period not found');
+      j(period, 'positions');
+      need(periodRoster(user, period).some((r) => r.id === pl.id), 400, 'That player is not in this period');
       planId = period.plan_id; drill = period.drill_id;
       if (period.event_id) date = db.get('SELECT start FROM events WHERE id=?', period.event_id).start.slice(0, 10);
       const existing = db.get('SELECT id FROM ratings WHERE period_id=? AND player_id=? AND coach_id=?', period.id, pl.id, user.id);

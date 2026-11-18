@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { start, today } from './helpers.js';
+import { start, today, addOtherProgram } from './helpers.js';
 
 let t; let head; let player; let parent; let qbc; let trainer; let ad; let vol; let season; let year;
 before(async () => {
@@ -215,4 +215,31 @@ test('home screens for staff, players and parents', async () => {
   assert.equal(pa.body.role, 'parent');
   assert.deepEqual(pa.body.players.map((x) => x.id), [player.id]);
   assert.equal(pa.body.players[0].forms_pending, 0);
+});
+
+test('ratings and evaluations need ratings access (trainer, AD) unless granted', async () => {
+  assert.equal((await trainer.get('/api/evaluations')).status, 403);
+  assert.equal((await head.get('/api/evaluations')).status, 200);
+  const tr = await trainer.get(`/api/development/${player.id}`);
+  assert.equal(tr.status, 200);
+  assert.equal(tr.body.evaluations, undefined);
+  assert.ok((await qbc.get(`/api/development/${player.id}`)).body.evaluations.length >= 1, 'coaches still see them');
+  const rep = await ad.get(`/api/season-report/player/${player.id}`);
+  assert.equal(rep.status, 200);
+  assert.deepEqual(rep.body.evaluations, []);
+  assert.equal(rep.body.ratings.avg, null);
+  assert.equal((await ad.get('/api/season-report/team')).body.ratings.avg, null);
+  assert.ok((await head.get(`/api/season-report/player/${player.id}`)).body.evaluations.length >= 1);
+  // granting the trainer ratings access opens them up
+  await t.setSettings({ trainer_ratings: true });
+  assert.equal((await trainer.get('/api/evaluations')).status, 200);
+  assert.ok((await trainer.get(`/api/development/${player.id}`)).body.evaluations.length >= 1);
+  await t.setSettings({ trainer_ratings: false });
+});
+
+test('goals for another program\'s player are not readable', async () => {
+  const other = addOtherProgram(t);
+  assert.equal((await head.get(`/api/goals?player_id=${other.player}`)).status, 403);
+  assert.equal((await trainer.get(`/api/goals?player_id=${other.player}`)).status, 403);
+  assert.equal((await head.get(`/api/goals?player_id=${player.id}`)).status, 200);
 });

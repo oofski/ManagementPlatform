@@ -298,8 +298,15 @@ export default function roster({ router, db, core }) {
     db.tx(() => {
       for (const m of moves) { if (playerOf(user.program_id, m.player_id) && teamOf(user.program_id, m.team_id)) { db.update('player_profiles', m.player_id, { team_id: m.team_id }, 'user_id'); moved++; } }
       if (grad) {
-        const r = db.run(`UPDATE player_profiles SET archived=1 WHERE class_year<=? AND user_id IN (SELECT id FROM users WHERE program_id=?)`, grad, user.program_id);
-        archived = Number(r.changes);
+        const ids = db.all(`SELECT user_id FROM player_profiles WHERE class_year<=? AND archived=0 AND user_id IN (SELECT id FROM users WHERE program_id=?)`, grad, user.program_id).map((r) => r.user_id);
+        for (const id of ids) {
+          // Same clean-up as archiving one player: sign out, leave groups and chats.
+          db.update('player_profiles', id, { archived: 1 }, 'user_id');
+          db.run('DELETE FROM sessions WHERE user_id=?', id);
+          db.run('DELETE FROM group_members WHERE user_id=?', id);
+          db.run('DELETE FROM chat_members WHERE user_id=?', id);
+        }
+        archived = ids.length;
       }
     });
     audit(user, 'season_rollover', 'roster', null, { moved, archived });
@@ -317,7 +324,7 @@ export default function roster({ router, db, core }) {
   });
   router.post('/api/players/:id/opt-out', ({ user, params, body }) => {
     const id = Number(params.id);
-    need(core.linkedPlayers(user).includes(id) || isAdmin(user), 403, 'Only the player or a parent can opt out');
+    need(core.linkedPlayers(user).includes(id) || (isAdmin(user) && playerOf(user.program_id, id)), 403, 'Only the player or a parent can opt out');
     db.update('player_profiles', id, { nutrition_opt_out: body.opt_out ? 1 : 0 }, 'user_id');
     audit(user, 'nutrition_opt_out', 'player', id, { opt_out: !!body.opt_out });
     return { ok: true };
@@ -331,6 +338,10 @@ export default function roster({ router, db, core }) {
     special: [['KR', 38, 3], ['PR', 62, 3], ['GUN-L', 10, 35], ['LS', 50, 35], ['GUN-R', 90, 35], ['K', 30, 67], ['H', 50, 67], ['P', 70, 67]],
   };
   router.get('/api/depth/layouts', () => SLOTS);
+  // Non-admin coaches limited to groups manage only depth charts for teams inside their scopes.
+  // A unit coordinator (unit:defense) also manages that unit's charts.
+  const managesTeam = (u, teamId, unit) => isAdmin(u) || !core.staffScopes(u.id).length || core.managesAudience(u, [`team:${teamId}`])
+    || (!!unit && core.staffScopes(u.id).includes(`unit:${unit}`));
   const chartVisible = (u, c) => isStaff(u) || (c.visible_to_players && core.linkedPlayers(u).some((pid) => db.get('SELECT 1 FROM player_profiles WHERE user_id=? AND team_id=?', pid, c.team_id)));
   router.get('/api/depth', ({ user, query }) => {
     const where = ['program_id=?']; const args = [user.program_id];
@@ -350,7 +361,7 @@ export default function roster({ router, db, core }) {
       if (!r) continue;
       if (show) {
         r.height = latest(id, 'height')?.value ?? null; r.weight = latest(id, 'weight')?.value ?? null;
-        r.avg_rating = db.get('SELECT round(avg(value),1) v FROM ratings WHERE player_id=?', id).v;
+        if (can(user, 'ratings.view')) r.avg_rating = db.get('SELECT round(avg(value),1) v FROM ratings WHERE player_id=?', id).v;
       } else delete r.availability;
       cards[id] = r;
     }
@@ -359,6 +370,7 @@ export default function roster({ router, db, core }) {
   router.post('/api/depth', ({ user, body }) => {
     need(can(user, 'depth.edit'), 403, 'Coaches only');
     need(teamOf(user.program_id, Number(body.team_id)) && SLOTS[body.unit] && body.week_label, 400, 'Team, unit and week are required');
+    need(managesTeam(user, Number(body.team_id), body.unit), 403, 'You can only build depth charts for your own teams');
     let slots = Object.fromEntries(SLOTS[body.unit].map(([k]) => [k, []]));
     if (body.copy_from) {
       const src = j(db.get('SELECT slots FROM depth_charts WHERE id=? AND program_id=?', Number(body.copy_from), user.program_id), 'slots');
@@ -374,9 +386,11 @@ export default function roster({ router, db, core }) {
     const id = Number(params.id);
     const c = j(db.get('SELECT * FROM depth_charts WHERE id=? AND program_id=?', id, user.program_id), 'slots');
     need(c, 404, 'Depth chart not found');
+    need(managesTeam(user, c.team_id, c.unit), 403, 'You can only edit depth charts for your own teams');
     const upd = { updated_by: user.id, updated_at: nowLocal() };
     if (body.slots) {
       for (const [k, v] of Object.entries(body.slots)) need(Array.isArray(v) && v.every(Number.isInteger), 400, `Bad slot ${k}`);
+      for (const pid of new Set(Object.values(body.slots).flat())) need(playerOf(user.program_id, pid), 400, 'Unknown player on the depth chart');
       upd.slots = body.slots;
       // Record moves for the development timeline (SEA-3).
       const moves = [];
@@ -396,7 +410,10 @@ export default function roster({ router, db, core }) {
   });
   router.del('/api/depth/:id', ({ user, params }) => {
     need(can(user, 'depth.edit'), 403, 'Coaches only');
-    db.run('DELETE FROM depth_charts WHERE id=? AND program_id=?', Number(params.id), user.program_id);
+    const c = db.get('SELECT * FROM depth_charts WHERE id=? AND program_id=?', Number(params.id), user.program_id);
+    need(c, 404, 'Depth chart not found');
+    need(managesTeam(user, c.team_id, c.unit), 403, 'You can only delete depth charts for your own teams');
+    db.run('DELETE FROM depth_charts WHERE id=? AND program_id=?', c.id, user.program_id);
     return { ok: true };
   });
 }

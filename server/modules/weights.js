@@ -21,7 +21,7 @@ export default function weights(ctx) {
   const { can, isStaff, isAdmin, audit, notify } = core;
   const editor = (u) => need(can(u, 'weights.edit'), 403, 'Coaches and trainers only');
   const playerIn = (u, id) => !!db.get(`SELECT 1 FROM users WHERE id=? AND program_id=? AND role='player'`, id, u.program_id);
-  const selfOrStaff = (u, id) => isStaff(u) || core.linkedPlayers(u).includes(id);
+  const selfOrStaff = (u, id) => (isStaff(u) && playerIn(u, id)) || core.linkedPlayers(u).includes(id);
 
   router.get('/api/weights/meta', () => ({ tests: TESTS }));
 
@@ -143,7 +143,13 @@ export default function weights(ctx) {
     audit(user, 'wt_override', 'player', Number(body.player_id), { assignment: a.id });
     return { id };
   });
-  router.del('/api/wt-overrides/:id', ({ user, params }) => { editor(user); db.run('DELETE FROM wt_overrides WHERE id=?', Number(params.id)); return { ok: true }; });
+  router.del('/api/wt-overrides/:id', ({ user, params }) => {
+    editor(user);
+    const o = db.get('SELECT o.id FROM wt_overrides o JOIN wt_assignments a ON a.id=o.assignment_id WHERE o.id=? AND a.program_id=?', Number(params.id), user.program_id);
+    need(o, 404, 'Override not found');
+    db.run('DELETE FROM wt_overrides WHERE id=?', o.id);
+    return { ok: true };
+  });
 
   // ---------- resolving a player's workout ----------
   function maxFor(playerId, testKey) {
@@ -210,7 +216,7 @@ export default function weights(ctx) {
   router.post('/api/wt-logs/batch', ({ user, body }) => ({ results: (body.items || []).map((i) => { try { return saveLog(user, i); } catch (e) { return { error: e.message }; } }) }));
   router.del('/api/wt-logs/:id', ({ user, params }) => {
     const l = db.get('SELECT * FROM wt_logs WHERE id=?', Number(params.id));
-    need(l && (l.player_id === user.id || can(user, 'weights.edit')), 403, 'No access');
+    need(l && (l.player_id === user.id || (can(user, 'weights.edit') && playerIn(user, l.player_id))), 403, 'No access');
     db.run('DELETE FROM wt_logs WHERE id=?', l.id);
     return { ok: true };
   });
@@ -257,7 +263,13 @@ export default function weights(ctx) {
     });
     return res;
   });
-  router.del('/api/tests/:id', ({ user, params }) => { editor(user); db.run('DELETE FROM tests WHERE id=?', Number(params.id)); return { ok: true }; });
+  router.del('/api/tests/:id', ({ user, params }) => {
+    editor(user);
+    const t = db.get('SELECT t.id FROM tests t JOIN users u ON u.id=t.player_id WHERE t.id=? AND u.program_id=?', Number(params.id), user.program_id);
+    need(t, 404, 'Test result not found');
+    db.run('DELETE FROM tests WHERE id=?', t.id);
+    return { ok: true };
+  });
 
   // Leaderboard — only when the coach turns it on; never body weight.
   router.get('/api/leaderboard', ({ user, query }) => {
@@ -302,7 +314,7 @@ export default function weights(ctx) {
   });
 
   // ---------- body weight (WGT-9) — private by default ----------
-  const canSeeBody = (u, pid) => core.linkedPlayers(u).includes(pid) || isAdmin(u) || can(u, 'body.view');
+  const canSeeBody = (u, pid) => core.linkedPlayers(u).includes(pid) || ((isAdmin(u) || can(u, 'body.view')) && playerIn(u, pid));
   router.get('/api/bodyweight/:playerId', ({ user, params }) => {
     const pid = Number(params.playerId);
     need(canSeeBody(user, pid), 403, 'Body weight is private to the player, their parents and staff who have been granted access');
@@ -395,7 +407,7 @@ export default function weights(ctx) {
   });
   router.get('/api/meal-logs', ({ user, query }) => {
     const pid = Number(query.player_id || user.id);
-    need(core.linkedPlayers(user).includes(pid) || isStaff(user), 403, 'No access');
+    need(core.linkedPlayers(user).includes(pid) || (isStaff(user) && playerIn(user, pid)), 403, 'No access');
     const date = query.date || today();
     return { meals: db.all('SELECT plan_id, meal_idx, done FROM meal_logs WHERE player_id=? AND date=?', pid, date), hydration: db.all('SELECT plan_id, met FROM hydration_logs WHERE player_id=? AND date=?', pid, date) };
   });

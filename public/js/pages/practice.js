@@ -235,7 +235,7 @@ async function run(el, ctx, id) {
     el.querySelectorAll('[data-ps]').forEach((b) => { b.onclick = async () => {
       const status = b.dataset.ps; let note = null;
       if (status === 'changed') { note = prompt('What changed?'); if (note === null) return; }
-      try { await api.post(`/api/periods/${p.id}/status`, { status, note }); p.status = status; toast(`Period ${status}`); if (status !== 'changed' && plan.periods[idx + 1]) move(idx + 1); else draw(); } catch (err) { errToast(err); }
+      try { await api.post(`/api/periods/${p.id}/status`, { status, note }, { offline: true }); p.status = status; toast(`Period ${status}`); if (status !== 'changed' && plan.periods[idx + 1]) move(idx + 1); else draw(); } catch (err) { errToast(err); }
     }; });
     offs.push(on(el, 'click', '[data-rate]', async (e, b) => {
       const pid = Number(b.closest('[data-pid]').dataset.pid); const value = Number(b.dataset.rate);

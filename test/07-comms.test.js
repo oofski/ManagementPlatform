@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { start, NEVER_QUIET, ALWAYS_QUIET, addDays, today } from './helpers.js';
+import { start, NEVER_QUIET, ALWAYS_QUIET, addDays, today, addOtherProgram } from './helpers.js';
 
 let t; let head; let player; let parent; let ad; let qbc; let V; let teamChat;
 before(async () => {
@@ -230,6 +230,26 @@ test('parent contact block: request, head coach applies, AD notified, messages h
   // announcements from the blocked coach skip the player
   const a = await qbc.post('/api/announcements', { title: 'QB meeting', audience: ['pos:QB'] });
   assert.equal(t.db.get('SELECT count(*) n FROM notifications WHERE ref=? AND user_id=?', `ann:${a.body.id}`, player.id).n, 0);
+  // ...and are hidden from the player's and parent's announcement lists too
+  assert.ok(!(await player.get('/api/announcements')).body.some((x) => x.id === a.body.id));
+  assert.ok(!(await parent.get('/api/announcements')).body.some((x) => x.id === a.body.id));
+  assert.ok((await head.get('/api/announcements')).body.some((x) => x.id === a.body.id));
+  assert.ok((await qbc.get('/api/announcements')).body.some((x) => x.id === a.body.id));
+});
+
+test('moderation and chat membership stay inside the program', async () => {
+  const other = addOtherProgram(t);
+  assert.equal((await head.post(`/api/reports/${other.report}/resolve`, { resolution: 'x' })).status, 404);
+  assert.equal(t.db.get('SELECT resolved FROM message_reports WHERE id=?', other.report).resolved, 0);
+  assert.equal((await head.post(`/api/messages/${other.message}/hide`)).status, 404);
+  assert.equal(t.db.get('SELECT hidden_by_admin FROM messages WHERE id=?', other.message).hidden_by_admin, 0);
+  assert.equal((await head.post(`/api/chats/${other.chat}/members/${other.player}/mute`)).status, 404);
+  assert.equal(t.db.get('SELECT muted FROM chat_members WHERE chat_id=? AND user_id=?', other.chat, other.player).muted, 0);
+  // extra chat members must be active users of this program
+  const base = { name: 'Extra test', audience: ['pos:QB'] };
+  assert.equal((await head.post('/api/chats', { ...base, extra_members: [other.coach] })).status, 400);
+  assert.equal((await head.post('/api/chats', { ...base, extra_members: [999999] })).status, 400);
+  assert.equal((await head.post('/api/chats', { ...base, extra_members: [ad.id] })).status, 200);
 });
 
 test('contact details are never exposed to members', async () => {

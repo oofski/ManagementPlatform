@@ -47,7 +47,7 @@ async function program(el, ctx, t) {
 }
 
 const PERMS = [['calendar_edit', 'Edit calendar'], ['roster_edit', 'Edit roster'], ['practice_edit', 'Edit practice plans'], ['ratings', 'See ratings'], ['playbook', 'View playbook'], ['playbook_edit', 'Edit playbook'], ['playbook_export', 'Export plays'],
-  ['equipment_manager', 'Equipment manager'], ['body_data', 'See body weight'], ['nutrition_pro', 'Approve meal plans'], ['messages', 'Send messages'], ['read_all_chats', 'Read all chats'], ['audit', 'Review audit log']];
+  ['equipment_manager', 'Equipment manager'], ['body_data', 'See body weight'], ['nutrition_pro', 'Approve meal plans'], ['messages', 'Send messages'], ['read_all_chats', 'Read all chats'], ['audit', 'Review audit log'], ['development', 'See development records']];
 async function staff(el, ctx, t) {
   const [list, auds] = await Promise.all([api.get('/api/staff'), api.get('/api/audiences')]);
   const scopeOpts = auds.filter((a) => ['Level', 'Team', 'Unit', 'Position group'].includes(a.kind));

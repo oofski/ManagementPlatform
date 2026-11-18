@@ -158,7 +158,7 @@ export default function season(ctx) {
       };
     }
     if (coachView(user)) {
-      out.evaluations = jAll(db.all('SELECT e.*, u.name by_name FROM evaluations e LEFT JOIN users u ON u.id=e.by_user WHERE e.player_id=? ORDER BY e.at DESC', pid), 'scores');
+      if (can(user, 'ratings.view')) out.evaluations = jAll(db.all('SELECT e.*, u.name by_name FROM evaluations e LEFT JOIN users u ON u.id=e.by_user WHERE e.player_id=? ORDER BY e.at DESC', pid), 'scores');
       audit(user, 'view', 'development', pid);
     }
     return out;
@@ -189,7 +189,7 @@ export default function season(ctx) {
   // ---------- goals (SEA-6) ----------
   router.get('/api/goals', ({ user, query }) => {
     const pid = Number(query.player_id || (user.role === 'player' ? user.id : 0));
-    if (pid) { need(isStaff(user) || core.linkedPlayers(user).includes(pid), 403, 'No access'); return db.all('SELECT * FROM dev_goals WHERE player_id=? ORDER BY status, id DESC', pid).map(goalProgress); }
+    if (pid) { need((isStaff(user) && db.get(`SELECT 1 FROM users WHERE id=? AND program_id=? AND role='player'`, pid, user.program_id)) || core.linkedPlayers(user).includes(pid), 403, 'No access'); return db.all('SELECT * FROM dev_goals WHERE player_id=? ORDER BY status, id DESC', pid).map(goalProgress); }
     need(coachView(user), 403, 'Coaches only');
     return db.all(`SELECT g.*, u.name player_name FROM dev_goals g JOIN users u ON u.id=g.player_id WHERE g.program_id=? ORDER BY g.status, g.due`, user.program_id).map(goalProgress);
   });
@@ -224,6 +224,7 @@ export default function season(ctx) {
   router.get('/api/evaluations/meta', () => ({ points: EVAL_POINTS, criteria: EVAL_CRITERIA }));
   router.get('/api/evaluations', ({ user, query }) => {
     need(coachView(user), 403, 'Coaches only');
+    need(can(user, 'ratings.view'), 403, 'Evaluations are visible to staff with access to ratings');
     return jAll(db.all(`SELECT e.*, u.name player_name, b.name by_name FROM evaluations e JOIN users u ON u.id=e.player_id LEFT JOIN users b ON b.id=e.by_user WHERE e.program_id=? ${query.point ? 'AND e.point=?' : ''} ORDER BY e.at DESC`, user.program_id, ...(query.point ? [query.point] : [])), 'scores');
   });
   router.post('/api/evaluations', ({ user, body }) => {
@@ -252,10 +253,11 @@ export default function season(ctx) {
       const rows = db.all('SELECT value, date FROM tests WHERE player_id=? AND test_key=? AND date>=? ORDER BY date', pid, k, from);
       if (rows.length) tests[k] = { label: TESTS[k].label, unit: TESTS[k].unit, first: rows[0].value, last: rows[rows.length - 1].value, best: TESTS[k].better === 'lower' ? Math.min(...rows.map((r) => r.value)) : Math.max(...rows.map((r) => r.value)) };
     }
-    const evals = jAll(db.all('SELECT point, scores, notes FROM evaluations WHERE player_id=? AND season_id IS ? ORDER BY at', pid, s?.id ?? null), 'scores');
+    const seeRatings = can(user, 'ratings.view');
+    const evals = seeRatings ? jAll(db.all('SELECT point, scores, notes FROM evaluations WHERE player_id=? AND season_id IS ? ORDER BY at', pid, s?.id ?? null), 'scores') : [];
     return {
       player: p, season: s, attendance_rate: attendanceRate(pid, from),
-      ratings: db.get('SELECT round(avg(value),2) avg, count(*) n FROM ratings WHERE player_id=? AND date>=?', pid, from),
+      ratings: seeRatings ? db.get('SELECT round(avg(value),2) avg, count(*) n FROM ratings WHERE player_id=? AND date>=?', pid, from) : { avg: null, n: 0, hidden: true },
       assignments: db.get(`SELECT count(*) total, sum(s.status='completed') done FROM assignment_status s JOIN assignments a ON a.id=s.assignment_id WHERE s.player_id=? AND coalesce(a.due,a.created_at)>=?`, pid, from),
       tests, evaluations: evals, goals: db.all('SELECT * FROM dev_goals WHERE player_id=? AND season_id IS ?', pid, s?.id ?? null).map(goalProgress),
       generated_at: nowLocal(),
@@ -271,7 +273,7 @@ export default function season(ctx) {
       season: s, games, attendance_rate: att.total ? Math.round((att.here / att.total) * 100) : null,
       practices: db.get(`SELECT count(*) n FROM events WHERE program_id=? AND type='practice' AND start>=? AND start<=? AND status!='cancelled'`, user.program_id, from, to + 'T23:59').n,
       plans_with_notes: db.get(`SELECT count(DISTINCT plan_id) n FROM practice_notes n JOIN practice_plans p ON p.id=n.plan_id WHERE p.program_id=?`, user.program_id).n,
-      ratings: db.get(`SELECT count(*) n, round(avg(value),2) avg FROM ratings r JOIN users u ON u.id=r.player_id WHERE u.program_id=? AND r.date>=?`, user.program_id, from),
+      ratings: can(user, 'ratings.view') ? db.get(`SELECT count(*) n, round(avg(value),2) avg FROM ratings r JOIN users u ON u.id=r.player_id WHERE u.program_id=? AND r.date>=?`, user.program_id, from) : { n: 0, avg: null, hidden: true },
       prs: db.get(`SELECT count(*) n FROM tests t JOIN users u ON u.id=t.player_id WHERE u.program_id=? AND t.date>=?`, user.program_id, from).n,
       roster: db.get(`SELECT count(*) n FROM users u JOIN player_profiles p ON p.user_id=u.id WHERE u.program_id=? AND u.role='player' AND p.archived=0`, user.program_id).n,
       equipment_outstanding: db.get('SELECT count(*) n FROM eq_issues WHERE program_id=? AND returned_at IS NULL', user.program_id).n,

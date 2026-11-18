@@ -123,7 +123,8 @@ export default function attendance(ctx) {
     need(isStaff(user), 403, 'Staff only');
     const e = eventOf(user.program_id, Number(params.eventId));
     need(e, 404, 'Event not found');
-    let ids = body.player_ids || core.resolvePlayers(user.program_id, e.audience);
+    const expected = core.resolvePlayers(user.program_id, e.audience);
+    let ids = Array.isArray(body.player_ids) ? body.player_ids.map(Number).filter((id) => expected.includes(id)) : expected;
     ids = ids.filter((id) => canMark(user, id));
     let n = 0;
     db.tx(() => {
@@ -147,8 +148,10 @@ export default function attendance(ctx) {
   });
   router.del('/api/attendance/:eventId/:playerId', ({ user, params }) => {
     need(isStaff(user), 403, 'Staff only');
+    const e = eventOf(user.program_id, Number(params.eventId));
+    need(e, 404, 'Event not found');
     need(canMark(user, Number(params.playerId)), 403, 'Not your group');
-    db.run('DELETE FROM attendance WHERE event_id=? AND player_id=?', Number(params.eventId), Number(params.playerId));
+    db.run('DELETE FROM attendance WHERE event_id=? AND player_id=?', e.id, Number(params.playerId));
     return { ok: true };
   });
 
@@ -181,7 +184,8 @@ export default function attendance(ctx) {
   // Player's own attendance (players and parents)
   router.get('/api/attendance/player/:id', ({ user, params }) => {
     const id = Number(params.id);
-    need(isStaff(user) || core.linkedPlayers(user).includes(id), 403, 'No access');
+    const inProgram = !!db.get(`SELECT 1 FROM users WHERE id=? AND program_id=? AND role='player'`, id, user.program_id);
+    need((isStaff(user) && inProgram) || core.linkedPlayers(user).includes(id), 403, 'No access');
     return db.all(`SELECT a.status, a.reason, a.confirmed, e.id event_id, e.title, e.type, e.start FROM attendance a JOIN events e ON e.id=a.event_id WHERE a.player_id=? ORDER BY e.start DESC LIMIT 200`, id);
   });
 

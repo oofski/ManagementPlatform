@@ -64,6 +64,9 @@ export const DEFAULT_SETTINGS = {
   rating_scale: 5,
   weekly_practice_limit_min: null, // CAL-15/PRAC-13: set from your state association's rules
   weekly_contact_limit_min: null,
+  // Google integration: deliver the email outbox through this staff member's connected Gmail (null = simulated).
+  gmail_send_user_id: null,
+  gmail_send_since: null,          // only outbox rows created after sending was turned on are delivered
   // CAL-5: standard game week. day = offset from Monday of game week.
   game_week_template: [
     { day: 0, type: 'film', title: 'Film: scout report', start: '15:15', end: '16:00', location: 'Film room' },
@@ -210,10 +213,12 @@ export function createCore(db) {
     if (isAdmin(u)) return true;
     const toks = Array.isArray(audience) ? audience : JSON.parse(audience || '[]');
     if (isStaff(u)) {
-      if (toks.some((t) => ['program', 'coaches', 'staff'].includes(t))) return true;
+      if (toks.some((t) => ['program', 'staff'].includes(t))) return true;
+      // 'coaches' items (e.g. coaches-only meetings) are for coaches, not trainers or other staff.
+      if (u.role === 'coach' && toks.includes('coaches')) return true;
       if (toks.includes(`user:${u.id}`)) return true;
       // Trainers and other staff view every non-staff-only event; coaches see events for groups they cover.
-      if (u.role !== 'coach') return true;
+      if (u.role !== 'coach') return toks.some((t) => t !== 'coaches');
       const scopes = staffScopes(u.id);
       if (!scopes.length) return true;
       if (toks.some((t) => scopeCovers(u.program_id, scopes, t))) return true;
@@ -235,7 +240,16 @@ export function createCore(db) {
     const toks = Array.isArray(audience) ? audience : JSON.parse(audience || '[]');
     const scopes = staffScopes(u.id);
     if (!toks.length) return false;
-    return toks.every((t) => t === `user:${u.id}` || scopeCovers(u.program_id, scopes, t) || (t.startsWith('group:')));
+    // A custom group is only "theirs" when every member of it falls inside the coach's scopes.
+    const groupCovered = (t) => {
+      const gid = Number(t.slice(6));
+      const g = db.get('SELECT id FROM custom_groups WHERE id=? AND program_id=?', gid, u.program_id);
+      if (!g || !scopes.length) return false;
+      return db.all('SELECT user_id FROM group_members WHERE group_id=?', gid)
+        .every((m) => m.user_id === u.id || scopeCovers(u.program_id, scopes, `player:${m.user_id}`));
+    };
+    return toks.every((t) => t === `user:${u.id}` || t === 'coaches' || t === 'staff'
+      || scopeCovers(u.program_id, scopes, t) || (t.startsWith('group:') && groupCovered(t)));
   }
   function describeAudience(programId, audience) {
     const toks = Array.isArray(audience) ? audience : JSON.parse(audience || '[]');
@@ -314,6 +328,7 @@ export function createCore(db) {
     if (!s) return null;
     const u = db.get('SELECT * FROM users WHERE id=? AND active=1', s.user_id);
     if (!u) return null;
+    if (u.role === 'player' && db.get('SELECT 1 FROM player_profiles WHERE user_id=? AND archived=1', u.id)) return null;
     u.perms = userPerms(u);
     u._session = s;
     return u;

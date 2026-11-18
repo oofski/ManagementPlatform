@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { start, today, addDays } from './helpers.js';
+import { start, today, addDays, addOtherProgram } from './helpers.js';
 
 let t; let head; let player; let trainer; let V; let drills = {};
 before(async () => {
@@ -216,4 +216,50 @@ test('game-week plans are created for every practice of the week from templates'
   for (const id of ids) assert.ok(t.db.get('SELECT id FROM practice_plans WHERE event_id=?', id));
   const again = await head.post('/api/plans/game-week', { week_of: mon, template_id: tpl });
   assert.equal(again.body.created.length, 0);
+});
+
+test('weekly practice total only counts practices for the same players', async () => {
+  const day = addDays(today(), 120);
+  const ev = async (title, audience, s, e) => (await head.post('/api/events', { type: 'practice', title, start: `${day}T${s}`, end: `${day}T${e}`, audience })).body.id;
+  const varsityEv = await ev('Varsity week check', [`team:${V}`], '15:00', '17:00');
+  await ev('JV week check', [`team:${t.teams['JV Red']}`], '15:00', '16:30'); // 90 min, other players
+  await ev('Program walkthrough', ['program'], '18:00', '18:30'); // 30 min, includes varsity
+  const plan = await head.post('/api/plans', { event_id: varsityEv });
+  const r = await head.put(`/api/plans/${plan.body.id}`, { periods: [{ duration: 60 }, { duration: 40, contact: true }] });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.week.minutes, 130);
+  assert.equal(r.body.week.contact_minutes, 40);
+});
+
+test('plans only reference this program\'s drills, plays and coaches; scoped coaches edit their own plans', async () => {
+  const other = addOtherProgram(t);
+  const plan = await head.post('/api/plans', { name: 'Scope plan', start_time: '15:30' });
+  for (const bad of [{ drill_id: other.drill }, { play_ids: [other.play] }, { coach_id: other.coach }]) {
+    assert.equal((await head.put(`/api/plans/${plan.body.id}`, { periods: [{ duration: 10, ...bad }] })).status, 400);
+  }
+  const mine = await head.put(`/api/plans/${plan.body.id}`, { periods: [{ duration: 10, drill_id: drills.tight || t.db.get('SELECT id FROM drills WHERE program_id=? LIMIT 1', head.user.program_id).id }] });
+  assert.equal(mine.status, 200);
+  // a position coach cannot edit or delete the head coach's plan, but can manage their own
+  const qbc = await t.as('QB coach');
+  assert.equal((await qbc.put(`/api/plans/${plan.body.id}`, { name: 'Hijack' })).status, 403);
+  assert.equal((await qbc.del(`/api/plans/${plan.body.id}`)).status, 403);
+  const own = await qbc.post('/api/plans', { name: 'QB plan' });
+  assert.equal((await qbc.put(`/api/plans/${own.body.id}`, { name: 'QB plan 2' })).status, 200);
+  assert.equal((await qbc.del(`/api/plans/${own.body.id}`)).status, 200);
+});
+
+test('ratings: only players in the period group, and scoped coaches rate only their own players', async () => {
+  const ev = await head.post('/api/events', { type: 'practice', title: 'Rating scope', start: `${addDays(today(), 2)}T15:30`, audience: [`team:${V}`] });
+  const plan = await head.post('/api/plans', { event_id: ev.body.id });
+  const d = await head.put(`/api/plans/${plan.body.id}`, { periods: [{ duration: 10, unit: 'defense' }, { duration: 10, unit: 'offense', positions: ['QB'] }] });
+  const [defP, qbP] = d.body.periods;
+  const qb = t.varsity(`p.positions LIKE '%"QB"%'`)[0];
+  const lineman = t.varsity(`p.units LIKE '%"defense"%' AND p.positions NOT LIKE '%"QB"%'`)[0];
+  const jv = t.players('p.team_id=?', t.teams['JV Red'])[0];
+  assert.equal((await head.post('/api/ratings', { period_id: qbP.id, player_id: lineman.id, value: 3 })).status, 400, 'not in the QB period');
+  assert.equal((await head.post('/api/ratings', { period_id: defP.id, player_id: jv.id, value: 3 })).status, 400, 'not at this practice');
+  assert.equal((await head.post('/api/ratings', { period_id: defP.id, player_id: lineman.id, value: 3 })).status, 200);
+  const qbc = await t.as('QB coach');
+  assert.equal((await qbc.post('/api/ratings', { period_id: defP.id, player_id: lineman.id, value: 3 })).status, 403, 'not the QB coach\'s player');
+  assert.equal((await qbc.post('/api/ratings', { period_id: qbP.id, player_id: qb.id, value: 4 })).status, 200);
 });

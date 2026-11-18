@@ -10,6 +10,43 @@ export { nowLocal, today, addDays, addMinutes };
 export const NEVER_QUIET = { quiet_start: '00:00', quiet_end: '24:00' };
 export const ALWAYS_QUIET = { quiet_start: '00:00', quiet_end: '00:00' };
 
+// A second, unrelated program (PLT-8 isolation tests): head coach, coach, player with parent, an event, a play,
+// a drill, a chat with a reported message, test/body-weight/goal/equipment records for the player.
+export function addOtherProgram(t) {
+  const { db } = t;
+  const pid = db.insert('programs', { name: 'Other HS Football', school: 'Other HS', settings: JSON.stringify(NEVER_QUIET) });
+  const level = db.insert('levels', { program_id: pid, name: 'Varsity' });
+  const team = db.insert('teams', { level_id: level, name: 'Varsity' });
+  const n = db.get('SELECT count(*) n FROM programs').n;
+  const head = db.insert('users', { program_id: pid, name: 'Other Head', email: `head${n}@other.example`, role: 'head_coach' });
+  const coach = db.insert('users', { program_id: pid, name: 'Other Coach', email: `coach${n}@other.example`, role: 'coach' });
+  const player = db.insert('users', { program_id: pid, name: 'Other Player', email: `player${n}@other.example`, role: 'player' });
+  db.insert('player_profiles', { user_id: player, team_id: team, jersey: 7, units: ['offense'], positions: ['QB'] });
+  const parent = db.insert('users', { program_id: pid, name: 'Other Parent', email: `parent${n}@other.example`, role: 'parent' });
+  db.insert('parent_links', { parent_id: parent, player_id: player, relation: 'parent' });
+  const event = db.insert('events', { program_id: pid, type: 'practice', title: 'Other practice', start: `${addDays(today(), 1)}T15:30`, end: `${addDays(today(), 1)}T17:30`, audience: ['program'] });
+  db.insert('attendance', { event_id: event, player_id: player, status: 'present', source: 'coach', confirmed: 1, by_user: coach });
+  const play = db.insert('plays', { program_id: pid, name: 'Other play', data: { players: [], quiz: [{ q: 'Who?', options: ['a', 'b'], answer: 1 }] } });
+  db.insert('play_views', { play_id: play, user_id: player, context: 'view' });
+  db.insert('quiz_results', { play_id: play, player_id: player, score: 1, total: 1, answers: [1] });
+  const drill = db.insert('drills', { program_id: pid, name: 'Other drill' });
+  const chat = db.insert('chats', { program_id: pid, name: 'Other chat', audience: ['program'], created_by: coach });
+  for (const u of [head, coach, player]) db.insert('chat_members', { chat_id: chat, user_id: u });
+  const message = db.insert('messages', { chat_id: chat, user_id: coach, body: 'hello' });
+  const report = db.insert('message_reports', { message_id: message, by_user: player, reason: 'test' });
+  const test = db.insert('tests', { player_id: player, test_key: 'squat', value: 300, date: today() });
+  db.insert('measurements', { player_id: player, kind: 'bodyweight', value: 180, date: today() });
+  db.insert('dev_goals', { program_id: pid, player_id: player, title: 'Other goal' });
+  const wtProgram = db.insert('wt_programs', { program_id: pid, name: 'Other lift', days: [] });
+  const wtAssignment = db.insert('wt_assignments', { program_id: pid, wt_program_id: wtProgram, audience: ['program'], start_date: today() });
+  const override = db.insert('wt_overrides', { assignment_id: wtAssignment, player_id: player, note: 'x' });
+  const wtLog = db.insert('wt_logs', { player_id: player, exercise_id: 1, set_no: 1, reps: 5, weight: 100, date: today() });
+  const eqType = db.insert('eq_types', { program_id: pid, name: 'Other jersey' });
+  const eqItem = db.insert('eq_items', { type_id: eqType, qty: 1 });
+  db.insert('eq_issues', { program_id: pid, item_id: eqItem, type_id: eqType, player_id: player, issued_at: today() });
+  return { program_id: pid, team, head, coach, player, parent, event, play, drill, chat, message, report, test, override, wtLog };
+}
+
 export async function start() {
   const app = createApp({ dbFile: ':memory:', dev: true });
   seed(app.db);

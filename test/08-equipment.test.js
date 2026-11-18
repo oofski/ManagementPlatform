@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { start, today } from './helpers.js';
+import { start, today, addOtherProgram } from './helpers.js';
 
 let t; let head; let eq; let dc; let player; let parent; let year;
 before(async () => {
@@ -178,4 +178,13 @@ test('inventory counts and reorder list', async () => {
   const helm = inv.body.rows.find((r) => r.type_id === helmetType);
   assert.equal(helm.size, 'all');
   assert.equal(helm.issued, 1);
+});
+
+test('equipment: another program\'s player cannot be read or have a jersey changed', async () => {
+  const other = addOtherProgram(t);
+  assert.equal((await eq.get(`/api/eq/player/${other.player}`)).status, 403);
+  assert.equal((await head.get(`/api/eq/player/${other.player}`)).status, 403);
+  assert.equal((await eq.post('/api/eq/issue', { player_id: other.player, jersey: 99 })).status, 404);
+  assert.equal(t.db.get('SELECT jersey FROM player_profiles WHERE user_id=?', other.player).jersey, 7);
+  assert.ok(!t.db.get(`SELECT 1 FROM audit WHERE action='assign_jersey' AND entity_id=?`, other.player));
 });

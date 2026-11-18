@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { start } from './helpers.js';
+import { start, addOtherProgram } from './helpers.js';
 
 let t; let head; let player; let parent; let trainer; let V;
 before(async () => {
@@ -161,8 +161,11 @@ test('depth charts: create, copy, move logs and player visibility', async () => 
   assert.deepEqual(Object.values(b.body.slots).flat(), []);
   assert.ok(b.body.layout.length === 11);
 
+  // A unit coordinator builds only their own unit's charts (group limits).
   const dc = await t.as('Defensive coordinator');
-  const c = await dc.post('/api/depth', { team_id: V, unit: 'offense', week_label: 'Test week', copy_from: src.id });
+  assert.equal((await dc.post('/api/depth', { team_id: V, unit: 'offense', week_label: 'Test week', copy_from: src.id })).status, 403);
+  const oc = await t.as('Offensive coordinator');
+  const c = await oc.post('/api/depth', { team_id: V, unit: 'offense', week_label: 'Test week', copy_from: src.id });
   assert.equal(c.status, 200);
   const chart = await head.get(`/api/depth/${c.body.id}`);
   assert.deepEqual(chart.body.slots, JSON.parse(src.slots));
@@ -221,4 +224,42 @@ test('archive ends access; nutrition opt-out by player or parent only', async ()
   assert.equal(t.db.get('SELECT nutrition_opt_out FROM player_profiles WHERE user_id=?', player.id).nutrition_opt_out, 1);
   await player.post(`/api/players/${player.id}/opt-out`, { opt_out: false });
   assert.equal(t.db.get('SELECT nutrition_opt_out FROM player_profiles WHERE user_id=?', player.id).nutrition_opt_out, 0);
+});
+
+test('depth charts: ratings only with ratings access; scoped coaches limited to their teams/units; players from this program only', async () => {
+  const src = t.db.get(`SELECT * FROM depth_charts WHERE unit='offense' AND team_id=? ORDER BY id LIMIT 1`, V);
+  const tr = await trainer.get(`/api/depth/${src.id}`);
+  assert.equal(tr.status, 200);
+  assert.ok(Object.values(tr.body.cards).every((x) => 'height' in x && x.avg_rating === undefined), 'trainer sees measurements but not ratings');
+  const jvh = await t.as('JV head coach');
+  assert.equal((await jvh.post('/api/depth', { team_id: V, unit: 'offense', week_label: 'nope' })).status, 403);
+  const jv = await jvh.post('/api/depth', { team_id: t.teams['JV Red'], unit: 'offense', week_label: 'JV wk' });
+  assert.equal(jv.status, 200);
+  assert.equal((await jvh.put(`/api/depth/${src.id}`, { week_label: 'hijack' })).status, 403);
+  assert.equal((await jvh.del(`/api/depth/${src.id}`)).status, 403);
+  const other = addOtherProgram(t);
+  assert.equal((await jvh.put(`/api/depth/${jv.body.id}`, { slots: { QB: [other.player] } })).status, 400);
+  assert.equal((await jvh.del(`/api/depth/${jv.body.id}`)).status, 200);
+});
+
+test('season rollover signs graduates out and removes them from groups and chats', async () => {
+  const year = t.db.get(`SELECT min(p.class_year) y FROM player_profiles p JOIN users u ON u.id=p.user_id WHERE u.program_id=? AND p.archived=0`, head.user.program_id).y;
+  const ids = t.db.all(`SELECT p.user_id id FROM player_profiles p JOIN users u ON u.id=p.user_id WHERE u.program_id=? AND p.archived=0 AND p.class_year<=?`, head.user.program_id, year).map((r) => r.id);
+  const c = await t.as(ids[0]);
+  assert.equal((await c.get('/api/me')).status, 200);
+  const g = await head.post('/api/groups', { name: 'Seniors', members: ids });
+  const chat = t.db.get('SELECT chat_id FROM chat_members WHERE user_id=? LIMIT 1', ids[0]);
+  const r = await head.post('/api/players/rollover', { graduating_class: year });
+  assert.equal(r.body.archived, ids.length);
+  assert.equal((await c.get('/api/me')).status, 401);
+  assert.equal(t.db.get(`SELECT count(*) n FROM sessions WHERE user_id IN (${ids.join(',')})`).n, 0);
+  assert.equal(t.db.get('SELECT count(*) n FROM group_members WHERE group_id=?', g.body.id).n, 0);
+  if (chat) assert.ok(!t.db.get('SELECT 1 FROM chat_members WHERE chat_id=? AND user_id=?', chat.chat_id, ids[0]));
+  for (const id of ids) t.db.run('UPDATE player_profiles SET archived=0 WHERE user_id=?', id);
+});
+
+test('nutrition opt-out by an admin is limited to their own program', async () => {
+  const other = addOtherProgram(t);
+  assert.equal((await head.post(`/api/players/${other.player}/opt-out`, { opt_out: true })).status, 403);
+  assert.equal(t.db.get('SELECT nutrition_opt_out FROM player_profiles WHERE user_id=?', other.player).nutrition_opt_out, 0);
 });

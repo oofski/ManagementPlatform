@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { start, today, addDays } from './helpers.js';
+import { start, today, addDays, addOtherProgram } from './helpers.js';
 
 let t; let head; let player; let parent; let sc; let trainer; let ex;
 before(async () => {
@@ -250,4 +250,22 @@ test('leaderboard only when the head coach turns it on', async () => {
   await t.setSettings({ leaderboard: false });
   assert.equal((await player.get('/api/leaderboard')).status, 403);
   assert.equal((await sc.get('/api/leaderboard')).status, 200);
+});
+
+test('weight room data is isolated per program (reads and deletes)', async () => {
+  const other = addOtherProgram(t);
+  // reads
+  assert.equal((await head.get(`/api/bodyweight/${other.player}`)).status, 403);
+  assert.equal((await trainer.get(`/api/bodyweight/${other.player}`)).status, 403);
+  assert.equal((await sc.get(`/api/tests?player_id=${other.player}`)).status, 403);
+  assert.equal((await sc.get(`/api/meal-logs?player_id=${other.player}`)).status, 403);
+  assert.equal((await sc.get(`/api/workouts/player/${other.player}`)).status, 403);
+  assert.equal((await trainer.get(`/api/bodyweight/${player.id}`)).status, 200, 'own program still works');
+  // deletes
+  assert.equal((await sc.del(`/api/wt-overrides/${other.override}`)).status, 404);
+  assert.equal((await sc.del(`/api/tests/${other.test}`)).status, 404);
+  assert.equal((await sc.del(`/api/wt-logs/${other.wtLog}`)).status, 403);
+  assert.ok(t.db.get('SELECT 1 FROM wt_overrides WHERE id=?', other.override));
+  assert.ok(t.db.get('SELECT 1 FROM tests WHERE id=?', other.test));
+  assert.ok(t.db.get('SELECT 1 FROM wt_logs WHERE id=?', other.wtLog));
 });

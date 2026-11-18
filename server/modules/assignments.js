@@ -10,6 +10,10 @@ export default function assignments(ctx) {
   const { router, db, core } = ctx;
   const { can, isStaff, isAdmin, audit, notify } = core;
   const editor = (u) => need(can(u, 'assignments.edit'), 403, 'Coaches only');
+  // Non-admin coaches change only assignments they created or whose audience is inside their groups.
+  // (A coach without group scopes works program-wide, as for attendance.)
+  const ownsAsn = (u, a) => isAdmin(u) || a.created_by === u.id || !core.staffScopes(u.id).length
+    || (a.audience.length > 0 && core.managesAudience(u, a.audience));
   const asnOf = (pid, id) => j(db.get('SELECT * FROM assignments WHERE id=? AND program_id=?', id, pid), 'audience', 'checklist', 'play_ids', 'recurring');
 
   const displayStatus = (st, due) => {
@@ -96,7 +100,7 @@ export default function assignments(ctx) {
     editor(user);
     const a = asnOf(user.program_id, Number(params.id));
     need(a, 404, 'Assignment not found');
-    const upd = {};
+    need(ownsAsn(user, a), 403, 'You can only change assignments you created or for your own groups');    const upd = {};
     for (const k of ['title', 'instructions', 'due', 'video_url']) if (body[k] !== undefined) upd[k] = body[k] || null;
     for (const k of ['checklist', 'play_ids', 'audience']) if (body[k]) upd[k] = body[k];
     if (body.install_id !== undefined) upd.install_id = body.install_id || null;
@@ -107,7 +111,10 @@ export default function assignments(ctx) {
   });
   router.del('/api/assignments/:id', ({ user, params }) => {
     editor(user);
-    db.run('DELETE FROM assignments WHERE id=? AND program_id=?', Number(params.id), user.program_id);
+    const a = asnOf(user.program_id, Number(params.id));
+    need(a, 404, 'Assignment not found');
+    need(ownsAsn(user, a), 403, 'You can only delete assignments you created or for your own groups');
+    db.run('DELETE FROM assignments WHERE id=? AND program_id=?', a.id, user.program_id);
     return { ok: true };
   });
 
@@ -142,10 +149,11 @@ export default function assignments(ctx) {
     need(a && a.type === 'quiz', 404, 'Quiz not found');
     need(db.get('SELECT 1 FROM assignment_status WHERE assignment_id=? AND player_id=?', a.id, user.id), 404, 'This quiz is not for you');
     let score = 0; let total = 0;
-    for (const pidStr of a.play_ids) {
-      const play = j(db.get('SELECT * FROM plays WHERE id=?', pidStr), 'data');
-      if (!play) continue;
+    const plays = a.play_ids.map((id) => j(db.get('SELECT * FROM plays WHERE id=? AND program_id=?', Number(id), user.program_id), 'data')).filter(Boolean);
+    need(plays.some((p) => (p.data.quiz || []).length), 400, 'This quiz has no questions yet');
+    for (const play of plays) {
       const quiz = play.data.quiz || [];
+      if (!quiz.length) continue;
       const ans = (body.answers || {})[play.id] || [];
       const s = quiz.reduce((acc, q, i) => acc + (Number(ans[i]) === Number(q.answer) ? 1 : 0), 0);
       db.insert('quiz_results', { play_id: play.id, player_id: user.id, score: s, total: quiz.length, answers: ans });

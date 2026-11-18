@@ -28,7 +28,11 @@ export default function comms(ctx) {
 
   // ---------- announcements (COM-1) ----------
   router.get('/api/announcements', ({ user }) => {
+    // COM-9: announcements from a coach blocked for this user's player are hidden.
+    const mine = core.linkedPlayers(user);
+    const blockedCoaches = blockedPairs(user.program_id).filter((b) => mine.includes(b.player_id)).map((b) => b.coach_id);
     const rows = jAll(db.all('SELECT a.*, u.name by_name FROM announcements a LEFT JOIN users u ON u.id=a.by_user WHERE a.program_id=? ORDER BY a.id DESC LIMIT 100', user.program_id), 'audience')
+      .filter((a) => a.by_user === user.id || !blockedCoaches.includes(a.by_user))
       .filter((a) => a.by_user === user.id || core.inAudience(user, a.audience) || core.resolveRecipients(user.program_id, a.audience).includes(user.id));
     return rows.map((a) => {
       const n = db.get('SELECT opened_at, deliver_at FROM notifications WHERE ref=? AND user_id=?', `ann:${a.id}`, user.id);
@@ -84,7 +88,10 @@ export default function comms(ctx) {
     // staff covering the audience join
     for (const id of core.resolveRecipients(user.program_id, body.audience, { parents: false })) if (isAdult(roleOf(id)) && roleOf(id) !== 'parent') ids.add(id);
     if (body.allow_parents && players.length) for (const r of db.all(`SELECT parent_id FROM parent_links WHERE player_id IN (${players.map(() => '?').join(',')})`, ...players)) ids.add(r.parent_id);
-    for (const x of body.extra_members || []) ids.add(Number(x));
+    for (const x of body.extra_members || []) {
+      need(db.get('SELECT 1 FROM users WHERE id=? AND program_id=? AND active=1', Number(x), user.program_id), 400, 'Unknown member');
+      ids.add(Number(x));
+    }
     enforceTwoAdults([...ids]);
     const id = db.insert('chats', { program_id: user.program_id, name: body.name, kind: body.kind || 'group', audience: body.audience, allow_players: body.allow_players === false ? 0 : 1, allow_parents: body.allow_parents ? 1 : 0, allow_files: body.allow_files === false ? 0 : 1, created_by: user.id });
     db.tx(() => { for (const uid of ids) db.run('INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?,?)', id, uid); });
@@ -224,12 +231,14 @@ export default function comms(ctx) {
   });
   router.post('/api/reports/:id/resolve', ({ user, params, body }) => {
     need(isAdmin(user), 403, 'Admins only');
+    need(db.get('SELECT 1 FROM message_reports r JOIN messages m ON m.id=r.message_id JOIN chats c ON c.id=m.chat_id WHERE r.id=? AND c.program_id=?', Number(params.id), user.program_id), 404, 'Report not found');
     db.run('UPDATE message_reports SET resolved=1, resolution=? WHERE id=?', body.resolution || 'reviewed', Number(params.id));
     audit(user, 'resolve_report', 'report', Number(params.id), body.resolution);
     return { ok: true };
   });
   router.post('/api/messages/:id/hide', ({ user, params, body }) => {
     need(isAdmin(user), 403, 'Admins only');
+    need(db.get('SELECT 1 FROM messages m JOIN chats c ON c.id=m.chat_id WHERE m.id=? AND c.program_id=?', Number(params.id), user.program_id), 404, 'Message not found');
     db.run('UPDATE messages SET hidden_by_admin=? WHERE id=?', body.hidden === false ? 0 : 1, Number(params.id));
     audit(user, body.hidden === false ? 'unhide_message' : 'hide_message', 'message', Number(params.id));
     return { ok: true };
@@ -272,6 +281,7 @@ export default function comms(ctx) {
   });
   router.post('/api/chats/:id/members/:uid/mute', ({ user, params, body }) => {
     need(isAdmin(user), 403, 'Admins only');
+    need(chatOf(user.program_id, Number(params.id)), 404, 'Chat not found');
     db.run('UPDATE chat_members SET muted=? WHERE chat_id=? AND user_id=?', body.muted === false ? 0 : 1, Number(params.id), Number(params.uid));
     audit(user, body.muted === false ? 'unmute' : 'mute', 'chat', Number(params.id), { user: Number(params.uid) });
     return { ok: true };

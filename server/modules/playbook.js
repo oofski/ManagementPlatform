@@ -22,8 +22,25 @@ export default function playbook(ctx) {
     for (const i of jAll(db.all('SELECT * FROM install_sheets WHERE program_id=?', u.program_id), 'audience', 'play_ids')) {
       if (core.inAudience(u, i.audience)) for (const id of i.play_ids) ids.add(id);
     }
+    // Plays a player was assigned to study or quiz on (directly or through an install sheet).
+    if (u.role === 'player') {
+      for (const a of jAll(db.all(`SELECT a.play_ids, a.install_id FROM assignments a JOIN assignment_status s ON s.assignment_id=a.id
+        WHERE s.player_id=? AND a.program_id=?`, u.id, u.program_id), 'play_ids')) {
+        for (const id of a.play_ids || []) ids.add(Number(id));
+        if (a.install_id) {
+          const i = j(db.get('SELECT play_ids FROM install_sheets WHERE id=? AND program_id=?', a.install_id, u.program_id), 'play_ids');
+          for (const id of i?.play_ids || []) ids.add(Number(id));
+        }
+      }
+    }
     return ids;
   }
+  // Install sheets may only list plays from the user's own program.
+  const programPlayIds = (u, list) => {
+    const ids = (list || []).map(Number);
+    for (const id of ids) need(db.get('SELECT 1 FROM plays WHERE id=? AND program_id=?', id, u.program_id), 400, 'Unknown play in this install');
+    return ids;
+  };
   const canView = (u, play) => (isStaff(u) ? can(u, 'playbook.view') : visiblePlayIds(u).has(play.id));
   const requireEdit = (u) => need(can(u, 'playbook.edit'), 403, 'You do not have edit access to the playbook');
 
@@ -98,6 +115,7 @@ export default function playbook(ctx) {
     if (query.folder) rows = rows.filter((p) => p.folder === query.folder);
     if (query.tag) rows = rows.filter((p) => p.tags.includes(query.tag));
     if (query.q) { const q = query.q.toLowerCase(); rows = rows.filter((p) => [p.name, p.formation, p.folder, p.tags.join(' '), p.coaching_points].join(' ').toLowerCase().includes(q)); }
+    if (!isStaff(user)) return rows.map(listShape).map((p) => ({ ...p, data: { ...p.data, quiz: (p.data?.quiz || []).map(({ answer, ...q }) => q) } }));
     return rows.map(listShape);
   });
   router.get('/api/plays/:id', ({ user, params, query }) => {
@@ -184,6 +202,7 @@ export default function playbook(ctx) {
   });
   router.get('/api/plays/:id/views', ({ user, params }) => {
     need(isStaff(user) && can(user, 'playbook.view'), 403, 'Staff only');
+    need(playOf(user.program_id, Number(params.id)), 404, 'Play not found');
     return db.all(`SELECT v.at, v.context, u.name, u.role FROM play_views v JOIN users u ON u.id=v.user_id WHERE v.play_id=? ORDER BY v.id DESC LIMIT 300`, Number(params.id));
   });
   // PLAY-7: export only when the head coach allows it, watermarked and logged.
@@ -251,7 +270,7 @@ export default function playbook(ctx) {
   router.post('/api/installs', ({ user, body }) => {
     requireEdit(user); need(body.name, 400, 'Name is required');
     need(!(body.audience || []).includes('parents'), 400, 'Parents do not have playbook access');
-    const id = db.insert('install_sheets', { program_id: user.program_id, name: body.name, play_ids: (body.play_ids || []).map(Number), notes: body.notes || null, audience: body.audience || [], created_by: user.id });
+    const id = db.insert('install_sheets', { program_id: user.program_id, name: body.name, play_ids: programPlayIds(user, body.play_ids), notes: body.notes || null, audience: body.audience || [], created_by: user.id });
     if ((body.audience || []).length) notify(user.program_id, core.resolvePlayers(user.program_id, body.audience), { kind: 'update', title: `Install sheet: ${body.name}`, link: `/playbook/install/${id}`, email: false });
     audit(user, 'create', 'install', id);
     return { id };
@@ -261,7 +280,7 @@ export default function playbook(ctx) {
     const i = db.get('SELECT * FROM install_sheets WHERE id=? AND program_id=?', Number(params.id), user.program_id);
     need(i, 404, 'Install sheet not found');
     if (body.audience) need(!body.audience.includes('parents'), 400, 'Parents do not have playbook access');
-    db.update('install_sheets', i.id, { ...(body.name && { name: body.name }), ...(body.notes !== undefined && { notes: body.notes }), ...(body.play_ids && { play_ids: body.play_ids.map(Number) }), ...(body.audience && { audience: body.audience }) });
+    db.update('install_sheets', i.id, { ...(body.name && { name: body.name }), ...(body.notes !== undefined && { notes: body.notes }), ...(body.play_ids && { play_ids: programPlayIds(user, body.play_ids) }), ...(body.audience && { audience: body.audience }) });
     audit(user, 'edit', 'install', i.id);
     return { ok: true };
   });
@@ -284,14 +303,17 @@ export default function playbook(ctx) {
     return { score, total: quiz.length, correct: quiz.map((q) => q.answer) };
   });
   router.get('/api/plays/:id/quiz-results', ({ user, params }) => {
-    need(isStaff(user), 403, 'Staff only');
+    need(isStaff(user) && can(user, 'playbook.view'), 403, 'Staff only');
+    need(playOf(user.program_id, Number(params.id)), 404, 'Play not found');
     return db.all('SELECT q.*, u.name FROM quiz_results q JOIN users u ON u.id=q.player_id WHERE q.play_id=? ORDER BY q.id DESC', Number(params.id));
   });
 
   // Tag and folder lists for filters
   router.get('/api/playbook/facets', ({ user }) => {
     need(can(user, 'playbook.view') || !isStaff(user), 403, 'No playbook access');
-    const rows = jAll(db.all('SELECT folder, tags, formation FROM plays WHERE program_id=?', user.program_id), 'tags');
+    if (user.role === 'parent') return { folders: [], tags: [], formations: [] };
+    let rows = jAll(db.all('SELECT id, folder, tags, formation FROM plays WHERE program_id=?', user.program_id), 'tags');
+    if (!isStaff(user)) { const ids = visiblePlayIds(user); rows = rows.filter((r) => ids.has(r.id)); }
     return {
       folders: [...new Set(rows.map((r) => r.folder).filter(Boolean))].sort(),
       tags: [...new Set(rows.flatMap((r) => r.tags))].sort(),

@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { start, today, addDays, addMinutes, nowLocal } from './helpers.js';
+import { start, today, addDays, addMinutes, nowLocal, addOtherProgram } from './helpers.js';
 
 let t; let head; let player; let V; let eventId; let roster;
 before(async () => {
@@ -186,4 +186,16 @@ test('reports: per-player rates, by type, CSV export, player history', async () 
   assert.equal((await player.get(`/api/attendance/player/${other.id}`)).status, 403);
   const parent = await t.as('parent@ridgeview.example');
   assert.equal((await parent.get(`/api/attendance/player/${player.id}`)).status, 200);
+});
+
+test('attendance is isolated per program and all-present only marks players in the event', async () => {
+  const other = addOtherProgram(t);
+  assert.equal((await head.get(`/api/attendance/player/${other.player}`)).status, 403);
+  assert.equal((await head.del(`/api/attendance/${other.event}/${other.player}`)).status, 404);
+  assert.ok(t.db.get('SELECT 1 FROM attendance WHERE event_id=? AND player_id=?', other.event, other.player), 'other program record untouched');
+  const e = await head.post('/api/events', { type: 'practice', title: 'All-present filter', start: addMinutes(nowLocal(), 90), audience: [`team:${V}`] });
+  const jv = t.players('p.team_id=?', t.teams['JV Red'])[0].id;
+  const r = await head.post(`/api/attendance/${e.body.id}/all-present`, { player_ids: [roster[0].id, jv, other.player] });
+  assert.equal(r.body.marked, 1);
+  assert.deepEqual(t.db.all('SELECT player_id FROM attendance WHERE event_id=?', e.body.id).map((x) => x.player_id), [roster[0].id]);
 });

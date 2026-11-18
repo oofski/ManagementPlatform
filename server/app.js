@@ -17,6 +17,7 @@ import commsModule from './modules/comms.js';
 import equipmentModule from './modules/equipment.js';
 import assignmentsModule from './modules/assignments.js';
 import seasonModule from './modules/season.js';
+import googleModule from './modules/google.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(__dirname, '..', 'public');
@@ -32,7 +33,7 @@ export function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname,
   const router = createRouter();
   const ctx = { db, core, router, dev, ticks: [] };
   for (const m of [authModule, rosterModule, calendarModule, practiceModule, playbookModule, attendanceModule,
-    weightsModule, commsModule, equipmentModule, assignmentsModule, seasonModule]) m(ctx);
+    weightsModule, commsModule, equipmentModule, assignmentsModule, seasonModule, googleModule]) m(ctx);
 
   // Modules register periodic jobs (reminders, assignment nudges). Run every minute.
   const tick = () => { for (const fn of ctx.ticks) { try { fn(); } catch (e) { console.error('tick', e); } } };
@@ -52,6 +53,7 @@ export function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname,
   });
 
   async function handleApi(req, res, url) {
+    if (url.pathname === '/api/health') return send(res, 200, { ok: true });
     const found = router.match(req.method, url.pathname);
     if (!found) return send(res, 404, { error: 'Not found' });
     const { route, params } = found;

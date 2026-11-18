@@ -100,6 +100,7 @@ export default function equipment(ctx) {
   }
   function setJersey(user, pid, jersey) {
     if (jersey === undefined || jersey === null || jersey === '') return null;
+    need(db.get(`SELECT 1 FROM users WHERE id=? AND program_id=? AND role='player'`, pid, user.program_id), 404, 'Player not found');
     db.run('UPDATE player_profiles SET jersey=? WHERE user_id=?', Number(jersey), pid);
     const p = db.get('SELECT team_id FROM player_profiles WHERE user_id=?', pid);
     const dup = db.get(`SELECT u.name FROM player_profiles pp JOIN users u ON u.id=pp.user_id WHERE pp.team_id=? AND pp.jersey=? AND pp.user_id!=? AND pp.archived=0`, p.team_id, Number(jersey), pid);
@@ -155,7 +156,8 @@ export default function equipment(ctx) {
   });
   router.get('/api/eq/player/:id', ({ user, params }) => {
     const pid = Number(params.id);
-    need(isStaff(user) || core.linkedPlayers(user).includes(pid), 403, 'No access');
+    const inProgram = !!db.get(`SELECT 1 FROM users WHERE id=? AND program_id=? AND role='player'`, pid, user.program_id);
+    need((isStaff(user) && inProgram) || core.linkedPlayers(user).includes(pid), 403, 'No access');
     return db.all(`SELECT s.id, s.size, s.qty, s.issued_at, s.condition_out, s.returned_at, s.return_status, s.acknowledged_at, t.name type_name, t.cost, i.serial
       FROM eq_issues s JOIN eq_types t ON t.id=s.type_id LEFT JOIN eq_items i ON i.id=s.item_id WHERE s.player_id=? ORDER BY s.returned_at IS NOT NULL, s.id DESC`, pid);
   });

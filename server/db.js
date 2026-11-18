@@ -314,6 +314,41 @@ CREATE TABLE IF NOT EXISTS dev_goals (
   status TEXT DEFAULT 'active', due TEXT, notes TEXT, season_id INTEGER, by_user INTEGER,
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
+
+-- Google Workspace integration (per-user connections; tokens are AES-256-GCM encrypted)
+CREATE TABLE IF NOT EXISTS google_accounts (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  email TEXT, scopes TEXT DEFAULT '[]', refresh_token_enc TEXT, access_token_enc TEXT, access_expires_at INTEGER,
+  gmail_label TEXT DEFAULT 'Team Calendar', gmail_query TEXT, imported_label_id TEXT, apply_imported_label INTEGER DEFAULT 1,
+  auto_scan INTEGER DEFAULT 1, allow_program_send INTEGER DEFAULT 0, last_scan_at TEXT, last_error TEXT,
+  connected_at TEXT, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS google_oauth_states (
+  state TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, session_hash TEXT NOT NULL,
+  features TEXT DEFAULT '[]', created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS google_seen (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, source TEXT NOT NULL, source_id TEXT NOT NULL,
+  at TEXT DEFAULT (datetime('now','localtime')), PRIMARY KEY (user_id, source, source_id)
+);
+CREATE TABLE IF NOT EXISTS gmail_drafts (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  source TEXT DEFAULT 'gmail', source_id TEXT NOT NULL, draft_index INTEGER DEFAULT 0, message_link TEXT,
+  subject TEXT, sender TEXT, received_at TEXT, snippet TEXT,
+  type TEXT, title TEXT, start TEXT, end TEXT, location TEXT, audience TEXT DEFAULT '[]', details TEXT DEFAULT '{}',
+  confidence REAL, notes TEXT DEFAULT '[]', status TEXT DEFAULT 'pending', event_id INTEGER,
+  created_at TEXT DEFAULT (datetime('now','localtime')), decided_at TEXT, decided_by INTEGER,
+  UNIQUE (user_id, source, source_id, draft_index)
+);
+CREATE INDEX IF NOT EXISTS gmail_drafts_user ON gmail_drafts(user_id, status);
+CREATE TABLE IF NOT EXISTS gcal_links (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  event_id INTEGER NOT NULL, event_created TEXT, calendar_id TEXT NOT NULL, google_event_id TEXT NOT NULL, hash TEXT,
+  pushed_at TEXT, UNIQUE (user_id, event_id, calendar_id)
+);
+CREATE TABLE IF NOT EXISTS google_outbox_log (
+  outbox_id INTEGER PRIMARY KEY, attempts INTEGER DEFAULT 0, gmail_id TEXT, last_error TEXT, at TEXT
+);
 `;
 
 export function openDb(file) {

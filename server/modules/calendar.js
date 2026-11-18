@@ -1,6 +1,6 @@
 // Module 1: Calendar — events with audiences and types, recurrence, game-week templates, status changes,
 // change log, reminders, urgent alerts with acknowledgment, RSVP, and an ICS subscribe feed.
-import { fail, need, nowLocal, addMinutes, addDays, parseLocal, fmtLocal, today } from '../core.js';
+import { fail, need, nowLocal, addMinutes, addDays, parseLocal, fmtLocal, today, token } from '../core.js';
 import { j, jAll } from '../db.js';
 
 export const EVENT_TYPES = ['game', 'practice', 'lift', 'film', 'meeting', 'social', 'other'];
@@ -141,7 +141,11 @@ export default function calendar(ctx) {
     if (b.type) upd.type = b.type;
     if (b.audience) upd.audience = b.audience;
     if (b.reminders) upd.reminders = b.reminders;
-    if (b.details) upd.details = cleanDetails(b.type || e.type, b.details);
+    if (b.details) {
+      upd.details = cleanDetails(b.type || e.type, b.details);
+      // Lift events stay linked to their weight-room program day when the details are replaced.
+      if ((b.type || e.type) === 'lift') for (const k of ['wt_assignment_id', 'week', 'day']) if (e.details?.[k] != null) upd.details[k] = e.details[k];
+    }
     if (b.start) upd.start = keepDate ? `${e.start.slice(0, 10)}T${b.start.slice(11)}` : b.start;
     if (b.end !== undefined) upd.end = b.end ? (keepDate ? `${(e.end || e.start).slice(0, 10)}T${b.end.slice(11)}` : b.end) : null;
     const changed = Object.keys(upd).filter((k) => k !== 'updated_at' && JSON.stringify(upd[k]) !== JSON.stringify(e[k]));
@@ -226,6 +230,7 @@ export default function calendar(ctx) {
     need(can(user, 'calendar.edit'), 403, 'You cannot create events');
     need(/^\d{4}-\d{2}-\d{2}$/.test(body.game_date || ''), 400, 'Game date is required');
     need(body.opponent, 400, 'Opponent is required');
+    need(isAdmin(user) || (body.audience && body.audience.length), 400, 'Pick who this game week is for');
     const audience = body.audience && body.audience.length ? body.audience : ['program'];
     need(isAdmin(user) || core.managesAudience(user, audience), 403, 'You can only create events for your own groups');
     const gd = parseLocal(body.game_date + 'T00:00');
@@ -261,7 +266,8 @@ export default function calendar(ctx) {
     let target = user.id;
     if (body.for_player) {
       target = Number(body.for_player);
-      need(core.linkedPlayers(user).includes(target) || isStaff(user), 403, 'You can only reply for your own player');
+      need(core.linkedPlayers(user).includes(target)
+        || (isStaff(user) && (target === user.id || core.resolvePlayers(user.program_id, e.audience).includes(target))), 403, 'You can only reply for your own player');
     }
     need(user.role !== 'parent' || body.for_player, 400, 'Parents reply on behalf of their player');
     if (e.rsvp_deadline && nowLocal() > e.rsvp_deadline) need(isStaff(user), 400, 'The RSVP deadline has passed. Contact a coach.');
@@ -295,7 +301,7 @@ export default function calendar(ctx) {
 
   router.get('/api/calendar/feed-url', ({ user }) => {
     let t = db.get('SELECT cal_token FROM users WHERE id=?', user.id).cal_token;
-    if (!t) { t = Math.random().toString(36).slice(2) + Date.now().toString(36); db.update('users', user.id, { cal_token: t }); }
+    if (!t) { t = token(16); db.update('users', user.id, { cal_token: t }); }
     return { path: `/feed/${t}.ics` };
   });
 

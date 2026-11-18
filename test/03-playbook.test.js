@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { start } from './helpers.js';
+import { start, addOtherProgram } from './helpers.js';
 
 let t; let head; let player; let parent; let dc; let V; let smash; let cover4;
 before(async () => {
@@ -208,4 +208,55 @@ test('playbooks and formations', async () => {
   assert.equal(t.db.get('SELECT playbook_id FROM plays WHERE id=?', playId).playbook_id, null);
   const facets = await head.get('/api/playbook/facets');
   assert.ok(facets.body.folders.includes('Quick'));
+});
+
+test('play list never carries quiz answers for players', async () => {
+  const list = await player.get('/api/plays');
+  const withQuiz = list.body.filter((p) => (p.data.quiz || []).length);
+  assert.ok(withQuiz.length, 'some visible play has questions');
+  assert.ok(withQuiz.every((p) => p.data.quiz.every((q) => q.answer === undefined)));
+  const staff = await head.get('/api/plays');
+  assert.ok(staff.body.some((p) => (p.data.quiz || []).some((q) => q.answer !== undefined)), 'staff still see answers');
+});
+
+test('facets: parents get nothing, players only see facets of their visible plays', async () => {
+  await head.post('/api/plays', { name: 'Secret facet play', folder: 'Secret folder', tags: ['secret-tag'], formation: 'Secret formation' });
+  const staff = await head.get('/api/playbook/facets');
+  assert.ok(staff.body.folders.includes('Secret folder'));
+  const pl = await player.get('/api/playbook/facets');
+  assert.equal(pl.status, 200);
+  assert.ok(!pl.body.folders.includes('Secret folder') && !pl.body.tags.includes('secret-tag') && !pl.body.formations.includes('Secret formation'));
+  assert.deepEqual((await parent.get('/api/playbook/facets')).body, { folders: [], tags: [], formations: [] });
+});
+
+test('plays assigned as quiz/study (directly or via an install sheet) become visible to that player', async () => {
+  const quiz = [{ q: 'Read?', options: ['a', 'b'], answer: 0 }];
+  const qPlay = (await head.post('/api/plays', { name: 'Assigned quiz play', data: { players: [], quiz } })).body.id;
+  const sPlay = (await head.post('/api/plays', { name: 'Assigned study play' })).body.id;
+  const inst = (await head.post('/api/installs', { name: 'Unshared install', play_ids: [sPlay] })).body.id;
+  assert.equal((await player.get(`/api/plays/${qPlay}`)).status, 404);
+  const a1 = await head.post('/api/assignments', { type: 'quiz', title: 'Assigned quiz', audience: [`player:${player.id}`], play_ids: [qPlay] });
+  const a2 = await head.post('/api/assignments', { type: 'study', title: 'Assigned study', audience: [`player:${player.id}`], install_id: inst });
+  assert.equal(a1.status, 200); assert.equal(a2.status, 200);
+  const got = await player.get(`/api/plays/${qPlay}`);
+  assert.equal(got.status, 200);
+  assert.ok(got.body.data.quiz.every((q) => q.answer === undefined));
+  assert.equal((await player.get(`/api/plays/${sPlay}`)).status, 200);
+  assert.ok((await player.get('/api/plays')).body.some((p) => p.id === qPlay));
+  // other players and parents do not get them
+  const other = await t.as(t.players('u.id!=?', player.id)[3].id);
+  assert.equal((await other.get(`/api/plays/${qPlay}`)).status, 404);
+  assert.equal((await parent.get(`/api/plays/${qPlay}`)).status, 404);
+});
+
+test('views, quiz results and installs are limited to this program\'s plays', async () => {
+  const other = addOtherProgram(t);
+  assert.deepEqual((await head.get(`/api/plays/${other.play}/views`)).status, 404);
+  assert.deepEqual((await head.get(`/api/plays/${other.play}/quiz-results`)).status, 404);
+  assert.equal((await head.post('/api/installs', { name: 'Leaky', play_ids: [other.play] })).status, 400);
+  const inst = await head.post('/api/installs', { name: 'Fine', play_ids: [smash] });
+  assert.equal((await head.put(`/api/installs/${inst.body.id}`, { play_ids: [smash, other.play] })).status, 400);
+  // quiz results need playbook access, not just a staff role
+  const vol = await t.as('Team manager (volunteer)');
+  assert.equal((await vol.get(`/api/plays/${smash}/quiz-results`)).status, 403);
 });
