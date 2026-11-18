@@ -14,7 +14,7 @@ export async function renderFeed(box, ctx) {
   const staff = ctx.me.caps.staff;
   const [m, f] = await Promise.all([api.get('/api/strength/meta'), api.get(`/api/strength/feed?${new URLSearchParams({ team_id: ctx.query.team || '', kind: ctx.query.kind || '' })}`)]);
   const go = (q) => ctx.navigate(`${location.pathname}?${new URLSearchParams(Object.fromEntries(Object.entries({ ...ctx.query, ...q }).filter(([, v]) => v)))}`);
-  set(box, html`<div class="grid g-side"><div>
+  set(box, html`<div class="grid g-side wr-grid"><div>
       <div class="filters">${staff ? html`<select id="ft"><option value="">All teams</option>${options(m.teams.map((t) => [t.id, t.name]), ctx.query.team)}</select>` : ''}<select id="fk"><option value="">All posts</option>${options(Object.entries(KIND).map(([k, v]) => [k, v[0]]), ctx.query.kind)}</select></div>
       <div class="card">${f.posts.length ? html`<ul class="list">${f.posts.map((p) => html`<li style="align-items:flex-start"><span class="badge ${KIND[p.kind]?.[1] || ''}" style="margin-top:2px">${KIND[p.kind]?.[0] || p.kind}</span>
         <div class="grow"><div class="t">${p.title}</div>${p.body ? html`<div class="s" style="white-space:pre-wrap">${p.body}</div>` : ''}<div class="s faint">${p.team} · ${p.by_name ? `${p.by_name} · ` : ''}${ago(p.at)}</div></div>

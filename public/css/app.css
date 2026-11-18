@@ -519,6 +519,9 @@ body:has(.pc) .modal-bg { z-index: 170; }
 /* ---------- v2 weight room (pages/weightroom.js, station.js, tv.js, wellness.js) ---------- */
 .ic.rot180 { transform: rotate(180deg); }
 .nowrap { white-space: nowrap; }
+.wr-seg { flex-wrap: wrap; max-width: 100%; }
+.wr-main, .wr-grid > * { min-width: 0; }
+.wr-grid .card > .hd { flex-wrap: wrap; }
 .wr-days { display: flex; flex-direction: column; gap: 10px; }
 .wr-day .hd { flex-wrap: wrap; gap: 8px; }
 .wr-day.drop, .wr-rows tr.drop td { box-shadow: inset 0 2px 0 var(--ring); }

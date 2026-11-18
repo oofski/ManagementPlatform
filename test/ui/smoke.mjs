@@ -21,7 +21,7 @@ const trainer = one(`SELECT id FROM users WHERE role='trainer'`).id;
 const ad = one(`SELECT id FROM users WHERE staff_kind='athletic_director'`).id;
 const player = one(`SELECT id FROM users WHERE email='player@ridgeview.example'`).id;
 const parent = one(`SELECT id FROM users WHERE email='parent@ridgeview.example'`).id;
-const ev = one(`SELECT id FROM events WHERE type='practice' ORDER BY abs(julianday(start)-julianday('now')) LIMIT 1`).id;
+const ev = one(`SELECT id FROM events WHERE type='practice' AND audience LIKE '%"team:1"%' ORDER BY abs(julianday(start)-julianday('now')) LIMIT 1`).id;
 const plan = one(`SELECT id FROM practice_plans WHERE event_id IS NOT NULL LIMIT 1`).id;
 const play = one(`SELECT id FROM plays LIMIT 1`).id;
 const inst = one(`SELECT id FROM install_sheets LIMIT 1`).id;

@@ -17,7 +17,7 @@ export default async function wellness(el, ctx) {
   const cur = w.today || {};
   const ans = { sleep_hours: cur.sleep_hours ?? '', ...Object.fromEntries(Q.map(([k]) => [k, cur[k] ?? null])) };
   set(el, html`<div class="page-head"><div><h1>Daily check-in</h1><div class="sub">${fmtDate(todayISO())}. Your strength coaches and athletic trainer see this; it helps them adjust your lifts.</div></div><div class="actions"><a class="btn" href="/weights">Weight room</a></div></div>
-    <div class="grid g-side"><div class="card"><div class="bd"><form id="wf">
+    <div class="grid g-side wr-grid"><div class="card"><div class="bd"><form id="wf">
       <div class="field"><label>Hours of sleep last night</label><span class="wr-step wr-big"><button type="button" class="icon" data-h="-0.5" aria-label="Less sleep">−</button><input type="number" inputmode="decimal" step="0.5" min="0" max="16" name="sleep_hours" value="${ans.sleep_hours}" required><button type="button" class="icon" data-h="0.5" aria-label="More sleep">+</button></span></div>
       ${Q.map(([k, label, words]) => html`<div class="field"><label>${label}</label><div class="wr-scale" data-q="${k}">${words.map((wd, i) => html`<button type="button" class="${ans[k] === i + 1 ? 'on' : ''}" data-v="${i + 1}"><b>${i + 1}</b><span>${wd}</span></button>`)}</div></div>`)}
       <div class="field"><label>Anything your coach should know? (optional)</label><textarea name="note" maxlength="500">${cur.note || ''}</textarea></div>
