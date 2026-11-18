@@ -1,7 +1,7 @@
 // Home screens: head coach / staff dashboard (SEA-7) and player / parent view (SEA-8).
 import { api } from '../api.js';
 import { icon } from '../icons.js';
-import { html, set, fmtDT, fmtTime, fmtDate, ago, statusBadge, availBadge, empty, bar, pct, cap, todayISO } from '../ui.js';
+import { html, set, fmtHM, fmtDT, fmtTime, fmtDate, ago, statusBadge, availBadge, empty, bar, pct, cap, todayISO } from '../ui.js';
 
 export default async function home(el, ctx) {
   const d = await api.get('/api/home');
@@ -65,7 +65,7 @@ function familyHome(el, ctx, d) {
       <div class="card"><div class="hd"><h2>Next 7 days</h2><span class="r"><a href="/calendar">Calendar</a></span></div>
         ${d.events.length ? html`<ul class="list">${d.events.map((e) => html`<li class="click type-${e.type}" onclick="__navigate('/calendar/${e.id}')">
           <div style="width:118px" class="s">${fmtDate(e.start)}<br>${fmtTime(e.start)}</div>
-          <div class="grow"><div class="t">${e.title} ${e.status !== 'scheduled' ? statusBadge(e.status) : ''}</div><div class="s">${e.location || ''}${e.details?.report_time ? ` · report ${e.details.report_time}` : ''}${e.details?.what_to_bring ? ` · bring: ${e.details.what_to_bring}` : ''}</div></div></li>`)}</ul>` : empty('Nothing scheduled.')}
+          <div class="grow"><div class="t">${e.title} ${e.status !== 'scheduled' ? statusBadge(e.status) : ''}</div><div class="s">${e.location || ''}${e.details?.report_time ? ` · report ${fmtHM(e.details.report_time)}` : ''}${e.details?.what_to_bring ? ` · bring: ${e.details.what_to_bring}` : ''}</div></div></li>`)}</ul>` : empty('Nothing scheduled.')}
       </div>
       ${d.players.map((p) => html`<div class="card"><div class="hd"><h2>${parent ? p.name : 'My assignments'}</h2><span class="r"><a href="/assignments">All</a></span></div>
         ${p.assignments.length ? html`<ul class="list">${p.assignments.map((a) => html`<li class="click" onclick="__navigate('/assignments/${a.id}')"><div class="grow"><div class="t">${a.title}</div><div class="s">${cap(a.type)}${a.due ? ` · due ${fmtDT(a.due)}` : ''}</div></div>${statusBadge(a.display_status === 'late' ? 'late_asn' : a.display_status, cap(a.display_status))}</li>`)}</ul>` : empty('All caught up.')}
