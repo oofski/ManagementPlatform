@@ -66,7 +66,7 @@ export const DEFAULT_SETTINGS = {
   weekly_contact_limit_min: null,
   // Google integration: deliver the email outbox through this staff member's connected Gmail (null = simulated).
   gmail_send_user_id: null,
-  gmail_send_since: null,          // only outbox rows created after sending was turned on are delivered
+  gmail_send_after_id: null,       // only outbox rows queued after sending was turned on are delivered
   // CAL-5: standard game week. day = offset from Monday of game week.
   game_week_template: [
     { day: 0, type: 'film', title: 'Film: scout report', start: '15:15', end: '16:00', location: 'Film room' },

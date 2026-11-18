@@ -407,7 +407,9 @@ export default function google(ctx) {
   function setSender(programId, uid) {
     const p = db.get('SELECT settings FROM programs WHERE id=?', programId);
     const cur = JSON.parse(p.settings || '{}');
-    const next = { ...cur, gmail_send_user_id: uid || null, gmail_send_since: uid ? (cur.gmail_send_user_id && cur.gmail_send_since ? cur.gmail_send_since : nowLocal().replace('T', ' ')) : null };
+    const maxId = db.get('SELECT coalesce(max(id),0) n FROM outbox').n;
+    const keep = cur.gmail_send_user_id && cur.gmail_send_after_id != null;
+    const next = { ...cur, gmail_send_user_id: uid || null, gmail_send_after_id: uid ? (keep ? cur.gmail_send_after_id : maxId) : null };
     db.run('UPDATE programs SET settings=? WHERE id=?', JSON.stringify(next), programId);
     return next;
   }
@@ -423,7 +425,7 @@ export default function google(ctx) {
     }
     const next = setSender(user.program_id, uid);
     audit(user, 'google_gmail_sender', 'program', user.program_id, { user_id: uid });
-    return { ok: true, gmail_send_user_id: next.gmail_send_user_id, gmail_send_since: next.gmail_send_since };
+    return { ok: true, gmail_send_user_id: next.gmail_send_user_id };
   });
 
   const encWord = (s) => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s, 'utf8').toString('base64')}?=`);
@@ -453,10 +455,11 @@ export default function google(ctx) {
         const acct = j(db.get(`SELECT g.*, u.role, u.is_admin FROM google_accounts g JOIN users u ON u.id=g.user_id WHERE g.user_id=? AND g.program_id=? AND u.active=1`, s.gmail_send_user_id, p.id), 'scopes');
         if (!acct || !acct.scopes.includes(G.SCOPE.gmailSend)) continue;
         if (!(acct.allow_program_send || acct.role === 'head_coach' || acct.is_admin)) continue;
-        const since = s.gmail_send_since || setSender(p.id, s.gmail_send_user_id).gmail_send_since;
+        // Mail queued before sending was turned on stays simulated (it may be months old).
+        const afterId = s.gmail_send_after_id ?? setSender(p.id, s.gmail_send_user_id).gmail_send_after_id;
         const rows = db.all(`SELECT o.* FROM outbox o JOIN users u ON u.id=o.user_id LEFT JOIN google_outbox_log l ON l.outbox_id=o.id
-          WHERE u.program_id=? AND o.sent_at IS NULL AND (o.deliver_at IS NULL OR o.deliver_at<=?) AND o.created_at>=? AND o.to_email LIKE '%_@_%'
-          AND coalesce(l.attempts,0)<3 ORDER BY o.id LIMIT ?`, p.id, nowLocal(), since, limit);
+          WHERE u.program_id=? AND o.sent_at IS NULL AND (o.deliver_at IS NULL OR o.deliver_at<=?) AND o.id>? AND o.to_email LIKE '%_@_%'
+          AND coalesce(l.attempts,0)<3 ORDER BY o.id LIMIT ?`, p.id, nowLocal(), afterId, limit);
         const gapi = gapiFor(cfg, acct);
         for (const r of rows) {
           try {
