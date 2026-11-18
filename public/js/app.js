@@ -19,6 +19,7 @@ const ROUTES = [
   ['/development', 'development', 'Development'], ['/development/player/:id', 'development', 'Player development'], ['/season', 'development', 'Season plan'], ['/reports/player/:id', 'development', 'Season report'], ['/reports/team', 'development', 'Team report'],
   ['/settings', 'settings', 'Program settings'], ['/settings/staff', 'settings', 'Staff and roles'], ['/settings/audit', 'settings', 'Audit log'], ['/settings/outbox', 'settings', 'Email outbox'], ['/account', 'settings', 'My account'],
   ['/checkin', 'checkin', 'Check in'],
+  ['/settings/integrations', 'integrations', 'Integrations'],
 ];
 const compiled = ROUTES.map(([p, mod, title]) => {
   const keys = [];

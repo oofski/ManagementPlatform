@@ -35,7 +35,7 @@ export default async function calendar(el, ctx) {
   <div class="page-head"><div><h1>Calendar</h1><div class="sub">${staff ? 'Every event for your groups. Filter by group or type.' : 'Your schedule, RSVPs and due dates.'}</div></div>
     <div class="actions">
       <button id="sub">Subscribe</button>
-      ${ctx.me.caps['calendar.edit'] ? html`<button id="gw">Game week</button><button class="primary" id="new">New event</button>` : ''}
+      ${ctx.me.caps['calendar.edit'] ? html`<a class="btn" href="/settings/integrations?tab=gmail">From Gmail</a><button id="gw">Game week</button><button class="primary" id="new">New event</button>` : ''}
     </div></div>
   <div class="filters">
     <div class="seg"><button class="${view === 'month' ? 'on' : ''}" onclick="__navigate('${link({ view: 'month' })}')">Month</button><button class="${view === 'agenda' ? 'on' : ''}" onclick="__navigate('${link({ view: 'agenda' })}')">Agenda</button></div>

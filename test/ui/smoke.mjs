@@ -40,14 +40,14 @@ const staffPages = ['/', '/calendar', '/calendar?view=agenda', `/calendar/${ev}`
   '/messages', `/messages/chat/${chat}`, '/messages/announcements', '/messages/moderation', '/equipment', '/equipment?tab=outstanding', '/equipment?tab=helmets', '/equipment?tab=inventory', '/equipment?tab=catalog',
   '/assignments', '/assignments?tab=templates', '/assignments?tab=forms', `/assignments/${asn}`,
   '/development', '/development?tab=goals', '/development?tab=evals', `/development/player/${player}`, '/season', `/reports/player/${player}`, '/reports/team',
-  '/settings', '/settings/staff', '/settings/audit', '/settings/outbox', '/account'];
+  '/settings', '/settings/staff', '/settings/audit', '/settings/outbox', '/account', '/settings/integrations', '/settings/integrations?tab=gmail'];
 const familyPages = ['/', '/calendar', `/calendar/${ev}`, '/assignments', '/assignments?tab=forms', `/assignments/${asn}`, '/playbook', `/playbook/play/${play}`, '/playbook/installs', `/playbook/install/${inst}`,
   '/weights', `/weights/workout/${wa}/1/1`, '/development', '/depth', `/depth/${chart}`, '/messages', `/messages/chat/${chat}`, '/messages/announcements', '/messages/moderation', '/equipment', '/checkin', '/account', `/players/${player}`];
 
 // Pages a role may legitimately be refused (403 notice is expected, not a crash).
 const expectedDenied = {
   parent: ['/playbook/play/', '/playbook/install/', '/weights/workout/', '/messages/chat/', '/depth/', '/messages/moderation'], player: ['/messages/chat/', '/depth/', '/messages/moderation'],
-  coach: ['/weights?tab=body', '/messages/moderation'], trainer: ['/playbook', '/practice/', '/messages/moderation'],
+  coach: ['/weights?tab=body', '/messages/moderation'], trainer: ['/playbook', '/practice/', '/messages/moderation', '/development?tab=evals'],
   ad: ['/weights?tab=body', '/practice/', '/development', '/reports/player/'],
 };
 const roles = [['head_coach', head, staffPages], ['coach', coach, staffPages], ['trainer', trainer, staffPages.filter((p) => !p.startsWith('/playbook'))], ['ad', ad, staffPages.filter((p) => !p.startsWith('/playbook'))], ['player', player, familyPages], ['parent', parent, familyPages]];

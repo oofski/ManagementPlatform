@@ -14,7 +14,7 @@ export default async function development(el, ctx) {
   if (r === '/development/player/:id') return record(el, ctx, Number(ctx.params.id));
   if (!ctx.me.caps.staff) return record(el, ctx, Number(ctx.query.player || ctx.me.linked[0]?.id || ctx.me.user.id));
   const tab = ctx.query.tab || 'group';
-  const t = tabs([['group', 'Position groups', '/development'], ['goals', 'Goals', '/development?tab=goals'], ['evals', 'Evaluations', '/development?tab=evals'], ['season', 'Season plan', '/season'], ['report', 'Team report', '/reports/team']], tab);
+  const t = tabs([['group', 'Position groups', '/development'], ['goals', 'Goals', '/development?tab=goals'], ...(ctx.me.caps['ratings.view'] ? [['evals', 'Evaluations', '/development?tab=evals']] : []), ['season', 'Season plan', '/season'], ['report', 'Team report', '/reports/team']], tab);
   if (tab === 'goals') return goalsTab(el, ctx, t);
   if (tab === 'evals') return evalsTab(el, ctx, t);
   return group(el, ctx, t);

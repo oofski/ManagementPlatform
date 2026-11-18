@@ -76,7 +76,7 @@ export function findDates(text, ref) {
   const iso = /\b(\d{4})-(\d{2})-(\d{2})\b/g;
   while ((m = iso.exec(text))) push(m, validDate(Number(m[1]), Number(m[2]), Number(m[3])), 'explicit');
   // (Friday) Nov 21(st)(, 2026)
-  const md = new RegExp(`(?:\\b${DOW_RE}\\.?,?\\s+)?\\b${MONTH_RE}\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b(?:,?\\s+(\\d{4}))?`, 'gi');
+  const md = new RegExp(`(?:\\b${DOW_RE}\\.?,?\\s+)?\\b${MONTH_RE}\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b(?![:.]\\d)(?:,?\\s+(\\d{4}))?`, 'gi');
   while ((m = md.exec(text))) {
     if (m[2].toLowerCase() === 'may' && !/^M/.test(m[2])) continue; // "you may 2..." is not a date
     const mo = monthNum(m[2]); const d = Number(m[3]);
@@ -207,6 +207,7 @@ function cleanPlace(s) {
     const before = x;
     x = x.replace(/[\s,.;:!-]+$/, '');
     x = x.replace(/\s+\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)?$/i, '');
+    x = x.replace(/\s+\d{1,2}\/\d{1,2}(\/\d{2,4})?$/, '').replace(/\s+\d{1,2}(:\d{2})?\s*(-|–|to)\s*$/i, '');
     const words = x.split(' ');
     const last = words[words.length - 1];
     if (words.length > 1 && (isDowWord(last) || isMonthWord(last) || /^(today|tonight|tomorrow|this|next)$/i.test(last))) x = words.slice(0, -1).join(' ');

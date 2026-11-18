@@ -55,13 +55,28 @@ The app also covers role-based access, an audit log, invite-based sign-in with t
 - `public/`: a vanilla JavaScript single-page app with no build step. `js/app.js` is the shell and router, `js/ui.js` the shared components, `js/field.js` the play renderer and animator, and `js/pages/*` holds one file per module. `sw.js` and `api.js` provide offline caching and the offline write queue.
 - Data lives in `data/app.db`. Set `DB_FILE` or `PORT` to change where it is stored or which port the server uses.
 
+## Google Workspace
+
+Each staff member can connect their own Google account under **Integrations** (`/settings/integrations`) and choose which features to grant:
+
+- **Gmail:** emails with a label you pick (default "Team Calendar") are scanned every 10 minutes; a built-in parser turns dates, times, places and opponents into event drafts that you review, edit and approve onto the calendar. Approved emails get an "Imported" label. The head coach can also deliver the email outbox through a staff member's Gmail.
+- **Google Calendar:** push the events you can see to a Google calendar (re-pushing updates instead of duplicating) and import Google events into the same review queue.
+- **Google Sheets:** import the roster or test maxes from a sheet; export roster, attendance and outstanding equipment to a new spreadsheet.
+- **Google Docs:** export a practice plan or a player's season report.
+
+It needs a Google Cloud OAuth client and these environment variables: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `APP_URL` and `TOKEN_KEY` (tokens are stored encrypted). Step-by-step setup for Render: [docs/google-setup.md](docs/google-setup.md).
+
 ## Not connected yet
 
 These need school accounts or credentials before they can work:
 
-- **Email:** messages are written to an outbox, which you can view under Settings › Email outbox. Real delivery needs a mail provider.
+- **Email:** messages are written to an outbox, which you can view under Settings › Email outbox. Real delivery needs a mail provider, or a connected Gmail account (see Google Workspace above).
 - **Push:** notifications appear in the app's Alerts panel. Real phone push needs Web Push keys.
 - **School sign-in:** the Google and Microsoft buttons explain that the school's OAuth client must be set up first.
 - **QR images:** the check-in QR image is drawn with a small library from cdnjs. The typed code always works without it.
 
 These rules should be confirmed with counsel and the state association before launch: education privacy law, parental consent, district messaging policy, current NFHS and state game-day technology rules, and practice-time limits.
+
+## Deploy on Render
+
+`render.yaml` is a Render Blueprint: in Render choose **New › Blueprint**, pick this repository, and it creates one web service with a persistent 1 GB disk for the database. It starts in demo mode (`DEMO_MODE=1`), with the sample program and demo sign-ins. For real use, set `DEMO_MODE=0` and fill in `ADMIN_EMAIL`, `ADMIN_PASSWORD` and `PROGRAM_NAME`. The first start then creates your program and head coach account. Set `APP_URL` to the service URL, and follow [docs/google-setup.md](docs/google-setup.md) to connect Google.
