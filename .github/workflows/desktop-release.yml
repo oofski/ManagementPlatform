@@ -27,11 +27,20 @@ jobs:
       - name: Install desktop build tools
         working-directory: desktop
         run: npm ci
-      - name: Build installer and publish release
+      - name: Build installer
         working-directory: desktop
+        run: npx electron-builder --win --x64 --publish never
+      - name: Publish GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --x64 --publish always
+        run: |
+          v=$(node -p "require('./desktop/package.json').version")
+          if ! gh release view "v$v" >/dev/null 2>&1; then
+            gh release create "v$v" --target "$GITHUB_SHA" --title "Program Manager $v" \
+              --notes "Download ProgramManager-Setup-$v.exe below and run it. Installed copies update automatically."
+          fi
+          gh release upload "v$v" "desktop/dist/ProgramManager-Setup-$v.exe" "desktop/dist/ProgramManager-Setup-$v.exe.blockmap" desktop/dist/latest.yml --clobber
       - name: Keep a copy of the installer with this run
         uses: actions/upload-artifact@v4
         with:
